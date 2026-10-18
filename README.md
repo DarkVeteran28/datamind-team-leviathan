@@ -145,7 +145,9 @@ flowchart TD
 | `src/datamind/validator.py` | Single-`SELECT` parsing; table, column, function and clause restrictions; 100-row cap |
 | `src/datamind/snowflake_client.py` | Credential check, connection, 30 s statement timeout, result retrieval |
 | `src/datamind/pipeline.py` | `ask(question)` orchestration: greetings and capabilities, ambiguity clarification, evidence-based answers, failure reporting |
+| `src/datamind/api.py` | Local FastAPI adapter that delegates to `ask(question)` for the React console |
 | `app/ui.py` | Streamlit interface showing answers, SQL, rows, query IDs, assumptions and warnings |
+| `frontend/` | React, TypeScript and Vite Trust Console; session-only query history |
 | `datamind_demo.py` | Interactive terminal interface |
 | `eval/` | Deterministic evaluation runner and cases (`run_evaluation.py`, `cases.json`) |
 | `snowflake_test.py` | Live Snowflake connection diagnostic |
@@ -228,10 +230,40 @@ The database and schema are fixed to `SNOWFLAKE_SAMPLE_DATA.TPCH_SF1`.
 
 ### Run
 
+#### React Trust Console (primary web interface)
+
+Start the local backend from the repository root after activating the Python environment and configuring `.env`:
+
 ```bash
-streamlit run app/ui.py        # web interface
+uvicorn datamind.api:app --app-dir src --host 127.0.0.1 --port 8000
+```
+
+In another terminal, start the frontend:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Open <http://127.0.0.1:5173>. The optional `frontend/.env.local` can set `VITE_DATAMIND_API_URL` (default `http://127.0.0.1:8000`). The API health indicator reports only whether the API process responds; it does not probe Ollama or Snowflake. The API has no authentication and is intended for local use; keep it bound to loopback. Browser access allows only the Vite localhost origins by default. Additional explicit HTTP(S) origins can be set in `DATAMIND_CORS_ORIGINS`.
+
+#### Streamlit fallback and terminal demo
+
+```bash
+streamlit run app/ui.py        # Streamlit fallback
 python datamind_demo.py        # terminal demo
 ```
+
+### Frontend checks
+
+```bash
+cd frontend
+npm test
+npm run build
+```
+
+Frontend tests mock the API. The production build checks TypeScript and bundles the UI; neither demonstrates a live Snowflake or Ollama connection.
 
 ---
 

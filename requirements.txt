@@ -3,3 +3,5 @@ sqlglot>=25,<31
 snowflake-connector-python>=3.12,<5
 pytest>=8,<9
 streamlit>=1.40,<2
+fastapi>=0.115,<1
+uvicorn>=0.27,<1
