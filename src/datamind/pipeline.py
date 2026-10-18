@@ -69,13 +69,18 @@ def ask(question):
         base["sql"] = validate_sql(base["sql"])
     except Exception as exc:
         base["answer"] = "I couldn’t complete the request because SQL generation or validation failed."
-        base["warnings"] = [str(exc)]
+        base["warnings"] = [str(exc) if isinstance(exc, ValueError) else f"SQL generation failed ({type(exc).__name__})."]
         return base
     try:
         columns, rows, query_id = snowflake_client.execute_sql(base["sql"])
-        base.update(columns=list(columns), rows=[list(row) for row in rows], query_id=query_id,
+        columns = list(columns)
+        rows = [list(row) for row in rows]
+        if any(len(row) != len(columns) for row in rows):
+            raise ValueError("Snowflake returned rows that do not match the column metadata.")
+        base.update(columns=columns, rows=rows, query_id=query_id,
                     row_count=len(rows), answer=_answer(columns, rows))
     except Exception as exc:
+        base["query_id"] = getattr(exc, "query_id", None)
         base["answer"] = "The Snowflake query failed; no result values are available."
-        base["warnings"] = [str(exc)]
+        base["warnings"] = [f"Snowflake execution failed ({type(exc).__name__})."]
     return base
