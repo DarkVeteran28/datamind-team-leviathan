@@ -38,6 +38,27 @@ Fill this in with the output from the run being submitted. Do not copy an earlie
 
 **Fresh reproduction during Phase 5 (2026-10-18, Asia/Calcutta):** base-interpreter `python -m pytest -q` failed collection because `sqlglot` and `snowflake.connector` were not installed; plain `python eval/run_evaluation.py` also failed because `sqlglot` was unavailable. With `PYTHONPATH=.venv/lib/python3.12/site-packages`, the tests completed with **52 passed**, and the evaluation reported **16 total, 16 passed, 0 failed**. No live Ollama or Snowflake check was run in this phase. These results record this environment and do not imply a clean environment can omit dependency installation.
 
+## Phase 6 observed release checks
+
+The following live and direct-validator observations were supplied for this evidence update. No timestamp, raw result values, or independent worksheet comparison was supplied.
+
+### Live Ollama and Snowflake
+
+- Question: `Show me the top 5 customers by account balance.`
+- Outcome: SQL validation and Snowflake execution succeeded; five rows were returned and answer-consistency checks passed.
+- Snowflake query ID: `01c7cf3a-0002-358f-000f-e7c2000108a6`.
+- Ambiguous question: `Show me the best customers.` Clarification was requested; SQL and query ID were null; validation, execution, and verification were `not_run`.
+
+These observations document the supplied run only. They do not establish semantic correctness for every question or prove universal SQL safety.
+
+### Direct validator checks
+
+Four supplied adversarial checks were rejected: unauthorized table, multiple SQL statements, nested subquery, and negative `LIMIT`. These are direct validator observations and are separate from the live query above and the mocked evaluation cases below.
+
+### Previously observed automated results
+
+The Phase 5 run recorded above remains **52 tests passed** and **16/16 offline mocked evaluation cases passed**. These are previously observed results, not tests rerun for Phase 6; mocked cases do not demonstrate live model accuracy.
+
 ## Safety controls and limits
 
 The implementation in [`validator.py`](../src/datamind/validator.py), [`snowflake_client.py`](../src/datamind/snowflake_client.py), and [`pipeline.py`](../src/datamind/pipeline.py) currently applies these controls:
@@ -106,4 +127,4 @@ Before sharing screenshots or logs, remove passwords, tokens, account identifier
 - Intent and ambiguity detection are rule-based and cover only selected patterns.
 - Ranking and semantic correctness are not established by the current deterministic answer verifier.
 - A live run requires working local Ollama, the configured model, valid Snowflake credentials, and read access to the configured sample table.
-- No live result or query ID is included in this document; collect those from an actual run before presenting live integration evidence.
+- The Phase 6 live observations include a query ID and row count, but no returned row values or direct worksheet comparison were supplied. Collect those separately before claiming an independent result comparison.
