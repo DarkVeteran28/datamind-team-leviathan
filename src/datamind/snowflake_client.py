@@ -10,7 +10,8 @@ class SnowflakeExecutionError(RuntimeError):
         self.query_id = query_id
 
 
-def execute_sql(sql):
+def execute_sql(sql, parameters=None):
+    """Execute validated SQL, binding compiler-supplied filter values when present."""
     # Import only when connecting so mocked/unit-only use does not need the
     # Snowflake connector installed in the interpreter.
     import snowflake.connector
@@ -27,7 +28,15 @@ def execute_sql(sql):
         with conn.cursor() as cur:
             cur.execute("ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = 30")
             cur.execute("ALTER SESSION SET QUERY_TAG = 'datamind_hackathon'")
-            cur.execute(sql)
+            if parameters:
+                if sql.count("?") != len(parameters):
+                    raise ValueError("SQL placeholder count does not match bound values.")
+                # SQLGlot validates qmark placeholders. Snowflake's default
+                # connector style is pyformat, so translate only compiler-owned
+                # placeholders at this execution boundary and bind the values.
+                cur.execute(sql.replace("?", "%s"), tuple(parameters))
+            else:
+                cur.execute(sql)
             query_id = cur.sfqid
             columns = [item[0] for item in cur.description]
             rows = cur.fetchmany(101)

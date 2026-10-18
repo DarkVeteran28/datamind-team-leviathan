@@ -47,6 +47,10 @@ def test_query_delegates_and_preserves_pipeline_evidence(monkeypatch):
         "execution": {"status": "succeeded", "checks": []},
         "verification": {"status": "passed", "checks": []},
         "clarification": {"required": False},
+        "sql_parameters": [],
+        "query_plan": {"version": 1, "status": "query", "dimensions": ["C_CUSTKEY"]},
+        "plan_validation": {"status": "passed", "checks": []},
+        "outcome": "success",
     }
     calls = []
     monkeypatch.setattr(api, "ask", lambda question: calls.append(question) or expected)
@@ -60,6 +64,8 @@ def test_query_delegates_and_preserves_pipeline_evidence(monkeypatch):
     assert body["validation"]["status"] == "passed"
     assert body["execution"]["status"] == "succeeded"
     assert body["verification"]["status"] == "passed"
+    assert body["outcome"] == "success"
+    assert body["query_plan"]["version"] == 1
 
 
 def test_query_rejects_empty_input_without_calling_pipeline(monkeypatch):

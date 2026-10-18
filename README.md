@@ -36,20 +36,22 @@ Organizations hold large amounts of information in databases, but getting a usef
 **DataMind** is a local natural-language interface to **Snowflake**:
 
 1. You ask a question in everyday language.
-2. **Gemma 3 4B**, running locally through **Ollama**, proposes a SQL query.
-3. A **strict SQLGlot validator** approves or rejects it.
+2. **Gemma 3 4B**, running locally through **Ollama**, proposes a typed query plan.
+3. Trusted Python validates the plan, compiles deterministic SQL, and binds filter values; the **SQLGlot validator** checks the compiled SQL.
 4. Only approved SQL is executed on **Snowflake**.
 5. The answer is composed **directly from the returned rows**, with the executed SQL and the **Snowflake query ID** shown for verification.
 
-> **Design principle: Gemma proposes, the validator decides, Snowflake computes.**
-> The language model is never asked to narrate results, so it cannot invent numbers in the answer text.
+> **Design principle: Gemma interprets, trusted Python compiles, the validator decides, Snowflake computes.**
+> The model returns no executable SQL and never narrates results, so it cannot inject SQL identifiers or invent answer values.
 
 ### What every answer contains
 
 | Output | Meaning |
 |---|---|
 | `answer` | Plain-language answer built from returned column names and row values |
-| `sql` | The exact SQL that was executed |
+| `sql` | Deterministically compiled SQL with bind placeholders |
+| `sql_parameters` | Filter values sent separately to Snowflake's connector |
+| `query_plan`, `plan_validation` | Typed intent proposal and the checks that accepted or rejected it |
 | `columns`, `rows`, `row_count` | The complete result set |
 | `query_id` | Snowflake query ID, verifiable in Snowsight Query History |
 | `assumptions` | Interpretations the model made |
@@ -90,7 +92,7 @@ Who are the best customers?      →  asks a clarifying question before querying
 | G4 | Datasets and licences disclosed, no data committed | ✅ See [Dataset](#-dataset-and-attribution) and [`DATASETS.md`](DATASETS.md) |
 | G5 | No secrets in the repository | ✅ `.env` is git-ignored; only `.env.example` is committed |
 | P1 | Snowflake used meaningfully | ✅ Every answer executes a query there |
-| P2 | Gemma used meaningfully | ✅ Gemma generates the SQL |
+| P2 | Gemma used meaningfully | ✅ Gemma interprets questions into typed query plans |
 | P3 | Answers derived from queries run at question time | ✅ |
 
 ---
@@ -113,11 +115,11 @@ Who are the best customers?      →  asks a clarifying question before querying
 |---|---|
 | Model | **Gemma 3 4B** (`gemma3:4b`), configurable through `DATAMIND_MODEL` |
 | Runtime | Local **Ollama**, configurable through `OLLAMA_URL` (default `http://localhost:11434/api/chat`) |
-| Task | Translates a natural-language question into a SQL proposal returned as JSON, including its assumptions |
+| Task | Translates a natural-language question into a versioned typed query plan returned as JSON, including its assumptions |
 | Output handling | `src/datamind/llm.py` parses the JSON response; unusable output is reported as a failure |
 | Not delegated to Gemma | SQL validation, query execution, row handling and answer composition |
 
-**Separation of concerns:** model inference (Gemma) is kept apart from data storage and query processing (Snowflake). Nothing the model writes is trusted until the validator approves it.
+**Separation of concerns:** Gemma proposes intent only. Trusted Python validates the plan and compiles SQL; nothing from the model is executed as SQL.
 
 ---
 
@@ -127,8 +129,11 @@ Who are the best customers?      →  asks a clarifying question before querying
 flowchart TD
     Q[User question] --> P{Greeting, identity<br/>or ambiguous?}
     P -->|yes| R[Reply or ask for clarification<br/>no Snowflake call]
-    P -->|no| L[Gemma 3 4B via Ollama<br/>proposes SQL as JSON]
-    L --> V{SQLGlot validator<br/>single SELECT, allowlists, 100-row cap}
+    P -->|no| L[Gemma 3 4B via Ollama<br/>proposes typed plan as JSON]
+    L --> T{Strict schema and<br/>semantic validation}
+    T -->|clarification or unsupported| W[Respond without SQL or Snowflake]
+    T -->|query plan| C[Trusted deterministic compiler<br/>bound filter values]
+    C --> V{SQLGlot validator<br/>single SELECT, allowlists, 100-row cap}
     V -->|rejected| W[Warning: query not executed]
     V -->|approved| S[Snowflake executes<br/>30 s timeout]
     S -->|error| W
@@ -141,7 +146,8 @@ flowchart TD
 
 | Path | Responsibility |
 |---|---|
-| `src/datamind/llm.py` | Ollama chat request and JSON response parsing |
+| `src/datamind/llm.py` | Ollama chat request and query-plan JSON parsing |
+| `src/datamind/semantic_query.py` | Strict plan schema, typed semantic checks, and deterministic parameterized SQL compiler |
 | `src/datamind/validator.py` | Single-`SELECT` parsing; table, column, function and clause restrictions; 100-row cap |
 | `src/datamind/snowflake_client.py` | Credential check, connection, 30 s statement timeout, result retrieval |
 | `src/datamind/pipeline.py` | `ask(question)` orchestration: greetings and capabilities, ambiguity clarification, evidence-based answers, failure reporting |
@@ -153,13 +159,13 @@ flowchart TD
 | `snowflake_test.py` | Live Snowflake connection diagnostic |
 | `DATASETS.md` | Dataset sources and attribution |
 
-`ask(question)` returns `answer`, `sql`, `columns`, `rows`, `query_id`, `assumptions`, `warnings` and `row_count`. For multi-row results the answer text shows up to three rows, and the complete result remains in `rows`.
+`ask(question)` preserves `answer`, `sql`, `columns`, `rows`, `query_id`, `assumptions`, `warnings` and `row_count`, and adds `query_plan`, `plan_validation`, `sql_parameters` and `outcome`. SQL filter placeholders correspond positionally to `sql_parameters`. For multi-row results the answer text shows up to three rows, and the complete result remains in `rows`.
 
 ---
 
 ## 🛡️ Safety model
 
-Generated SQL is treated as **untrusted input** and runs only if it passes every check.
+The model returns a declarative query plan, never executable SQL. Trusted code compiles only approved catalog entries and binds filter values. Compiled SQL still runs only if it passes every SQL safety check.
 
 | Layer | What it enforces |
 |---|---|
@@ -167,6 +173,8 @@ Generated SQL is treated as **untrusted input** and runs only if it passes every
 | Table allowlist | Only `SNOWFLAKE_SAMPLE_DATA.TPCH_SF1.CUSTOMER` |
 | Column allowlist | Only `C_CUSTKEY`, `C_NAME`, `C_ACCTBAL`, `C_MKTSEGMENT` |
 | Function and clause restrictions | Joins, subqueries, window functions, wildcard selection and arbitrary functions are rejected |
+| Plan and type restrictions | Unknown fields and operations are rejected; filters must use approved operators and values matching configured field types |
+| Parameter binding | User filter values are passed separately from the compiled statement |
 | Row cap | `LIMIT 100` is enforced |
 | Statement timeout | 30 seconds on Snowflake |
 | Pre-query routing | Greetings, identity questions and detected ambiguity return without contacting Snowflake |
@@ -180,7 +188,8 @@ Generated SQL is treated as **untrusted input** and runs only if it passes every
 |---|---|:---:|
 | Greeting or "what can you do?" | Friendly capabilities reply | No |
 | Ambiguous question (e.g. "best customers") | Asks a clarifying question before querying | No |
-| Model returns unusable output | Warning reported; no query claimed | No |
+| Model returns an unusable plan | Rejected before SQL compilation; no query claimed | No |
+| Unsupported request | Explicit unsupported response before SQL compilation | No |
 | SQL fails validation (unknown column, join, `DROP`, …) | Rejected with a warning; **not executed** | No |
 | Snowflake error or timeout | Warning reported; success is never claimed | Attempted |
 | Valid query, zero rows | States that the query succeeded and returned no rows | Yes |
@@ -343,17 +352,17 @@ TPC-H is benchmark data, not real customer records. See [`DATASETS.md`](DATASETS
 We state these openly so you can judge the project on what it really does.
 
 - **Narrow scope.** This milestone supports a conservative subset of `SELECT` against **one configured table and four columns**. Joins, subqueries, window functions, wildcard selection, arbitrary functions, and additional tables or columns are rejected.
-- **Rule-based ambiguity detection.** It cannot cover every natural-language phrasing. Review the generated SQL and assumptions whenever intent matters.
+- **Bounded plan schema and rule-based ambiguity detection.** They cannot cover every natural-language phrasing. Review compiled SQL, bound values, and assumptions whenever intent matters.
 - **No model-accuracy benchmark.** The deterministic evaluation measures expected behaviour on fixtures, not real Gemma accuracy or live Snowflake correctness.
 - **Row cap is not a cost cap.** `LIMIT 100` bounds returned rows, not the work Snowflake performs. The 30-second statement timeout is the bound on query time.
-- **Small local model.** Gemma 3 4B can occasionally write SQL that is valid but does not match the user's intent. The validator blocks unsafe SQL; it cannot guarantee the query answers the question asked.
+- **Small local model.** Gemma 3 4B can return a valid plan that does not fully match the user's intent. Schema checks and the SQL validator restrict executable behavior but cannot guarantee semantic correctness.
 - **Live demo requirements.** A working local Ollama install and valid Snowflake credentials are required.
 
 ---
 
 ## 💡 Main technical contribution
 
-DataMind treats the language model as an **untrusted SQL proposer** and puts deterministic code on both sides of it: a strict SQLGlot validator before execution, and an answer composer after execution that uses only Snowflake-returned values. Answers are therefore grounded by construction, with the SQL and query ID available for independent verification, while inference stays fully local through Ollama.
+DataMind treats the language model as an **untrusted intent interpreter**. Trusted code validates a typed plan, compiles SQL from the fixed catalog, binds filter values, and applies SQLGlot checks before execution. The answer composer then uses only Snowflake-returned values. These controls restrict unsafe proposals, but they do not prove that a plan captures every user's intent; review the SQL, bound values, assumptions, rows, and query ID. Inference stays local through Ollama.
 
 ---
 

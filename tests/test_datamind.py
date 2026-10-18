@@ -10,6 +10,13 @@ from datamind import pipeline
 from datamind.validator import validate_sql
 
 
+def _plan(**overrides):
+    plan = {"version": 1, "status": "query", "dimensions": [], "metrics": [], "filters": [],
+            "sort": [], "limit": None, "assumptions": []}
+    plan.update(overrides)
+    return plan
+
+
 def test_valid_query_adds_limit_and_caps_limit():
     assert "LIMIT 100" in validate_sql("SELECT C_CUSTKEY FROM CUSTOMER")
     assert "LIMIT 100" in validate_sql("SELECT C_CUSTKEY FROM CUSTOMER LIMIT 500")
@@ -30,20 +37,20 @@ def test_invalid_or_malicious_sql_rejected(sql):
 def test_non_data_intents_do_not_query(question, monkeypatch):
     def fail(_):
         raise AssertionError("model should not run")
-    monkeypatch.setattr(pipeline.llm, "generate_sql", fail)
+    monkeypatch.setattr(pipeline.llm, "generate_plan", fail)
     assert pipeline.ask(question)["sql"] is None
 
 
 def test_ambiguous_question_requests_clarification(monkeypatch):
-    monkeypatch.setattr(pipeline.llm, "generate_sql", lambda _: pytest.fail("unexpected call"))
+    monkeypatch.setattr(pipeline.llm, "generate_plan", lambda _: pytest.fail("unexpected call"))
     result = pipeline.ask("Who are the best customers?")
     assert "define" in result["answer"]
     assert result["warnings"]
 
 
 def test_pipeline_success_returns_snowflake_evidence(monkeypatch):
-    monkeypatch.setattr(pipeline.llm, "generate_sql", lambda _: {"sql": "SELECT C_CUSTKEY FROM CUSTOMER", "assumptions": ["all customers"]})
-    monkeypatch.setattr(pipeline.snowflake_client, "execute_sql", lambda sql: (["C_CUSTKEY"], [(42,)], "qid-1"))
+    monkeypatch.setattr(pipeline.llm, "generate_plan", lambda _: _plan(dimensions=["C_CUSTKEY"], assumptions=["all customers"]))
+    monkeypatch.setattr(pipeline.snowflake_client, "execute_sql", lambda *args: (["C_CUSTKEY"], [(42,)], "qid-1"))
     result = pipeline.ask("show a customer key")
     assert result["rows"] == [[42]]
     assert result["query_id"] == "qid-1"
@@ -53,7 +60,7 @@ def test_pipeline_success_returns_snowflake_evidence(monkeypatch):
 
 
 def test_model_failure_is_honest(monkeypatch):
-    monkeypatch.setattr(pipeline.llm, "generate_sql", lambda _: (_ for _ in ()).throw(RuntimeError("offline")))
+    monkeypatch.setattr(pipeline.llm, "generate_plan", lambda _: (_ for _ in ()).throw(RuntimeError("offline")))
     result = pipeline.ask("show customer keys")
     assert "failed" in result["answer"] or "couldn’t complete" in result["answer"]
     assert result["query_id"] is None
@@ -61,7 +68,7 @@ def test_model_failure_is_honest(monkeypatch):
 
 
 def test_database_failure_preserves_sql_and_does_not_claim_success(monkeypatch):
-    monkeypatch.setattr(pipeline.llm, "generate_sql", lambda _: {"sql": "SELECT C_CUSTKEY FROM CUSTOMER"})
+    monkeypatch.setattr(pipeline.llm, "generate_plan", lambda _: _plan(dimensions=["C_CUSTKEY"]))
     monkeypatch.setattr(pipeline.snowflake_client, "execute_sql", lambda _: (_ for _ in ()).throw(RuntimeError("offline")))
     result = pipeline.ask("show customer keys")
     assert result["sql"] and result["query_id"] is None
@@ -76,8 +83,13 @@ def test_database_failure_preserves_sql_and_does_not_claim_success(monkeypatch):
      ["C_CUSTKEY", "C_MKTSEGMENT"], [(7, "BUILDING")], "C_MKTSEGMENT=BUILDING"),
 ])
 def test_aggregation_and_filter_answers_use_returned_values(monkeypatch, question, sql, columns, rows, evidence):
-    monkeypatch.setattr(pipeline.llm, "generate_sql", lambda _: {"sql": sql})
-    monkeypatch.setattr(pipeline.snowflake_client, "execute_sql", lambda _: (columns, rows, "qid-evidence"))
+    if "COUNT(*)" in sql:
+        test_plan = _plan(metrics=[{"operation": "count"}])
+    else:
+        test_plan = _plan(dimensions=["C_CUSTKEY", "C_MKTSEGMENT"], filters=[
+            {"field": "C_MKTSEGMENT", "operator": "eq", "value": "BUILDING"}], limit=1)
+    monkeypatch.setattr(pipeline.llm, "generate_plan", lambda _: test_plan)
+    monkeypatch.setattr(pipeline.snowflake_client, "execute_sql", lambda *args: (columns, rows, "qid-evidence"))
     result = pipeline.ask(question)
     assert evidence in result["answer"]
     assert result["rows"] == [list(row) for row in rows]
@@ -85,8 +97,9 @@ def test_aggregation_and_filter_answers_use_returned_values(monkeypatch, questio
 
 
 def test_empty_result_is_reported_without_invented_values(monkeypatch):
-    monkeypatch.setattr(pipeline.llm, "generate_sql", lambda _: {"sql": "SELECT C_CUSTKEY FROM CUSTOMER WHERE C_CUSTKEY = -1"})
-    monkeypatch.setattr(pipeline.snowflake_client, "execute_sql", lambda _: (["C_CUSTKEY"], [], "qid-empty"))
+    monkeypatch.setattr(pipeline.llm, "generate_plan", lambda _: _plan(dimensions=["C_CUSTKEY"], filters=[
+        {"field": "C_CUSTKEY", "operator": "eq", "value": -1}]))
+    monkeypatch.setattr(pipeline.snowflake_client, "execute_sql", lambda *args: (["C_CUSTKEY"], [], "qid-empty"))
     result = pipeline.ask("Find this customer key")
     assert result["answer"] == "The query completed successfully and returned no rows."
     assert result["rows"] == []

@@ -3,6 +3,7 @@ import type { HistoryEntry } from '../types/api';
 import { StatusBadge } from './StatusBadge';
 
 function outcome(entry: HistoryEntry) {
+  if (entry.result.outcome === 'unsupported' || entry.result.outcome === 'rejected' || entry.result.outcome === 'failed') return entry.result.outcome;
   if (entry.result.clarification?.required) return 'skipped';
   if (entry.result.execution?.status) return entry.result.execution.status;
   if (entry.result.validation?.status === 'rejected') return 'rejected';

@@ -30,6 +30,7 @@ const navTargets: Record<SectionId, string> = {
 
 function queryOutcome(result?: QueryResponse): string {
   if (!result) return 'unknown';
+  if (result.outcome === 'unsupported' || result.outcome === 'rejected' || result.outcome === 'failed') return result.outcome;
   if (result.clarification?.required) return 'skipped';
   if (result.execution?.status) return result.execution.status;
   if (result.validation?.status === 'rejected') return 'rejected';
@@ -61,7 +62,7 @@ function QueryReceipt({ result }: { result: QueryResponse }) {
 
 function AnswerCard({ result, question }: { result: QueryResponse; question: string }) {
   const clarification = result.clarification?.required === true;
-  const failed = result.execution?.status === 'failed' || result.verification?.status === 'failed' || result.validation?.status === 'rejected';
+  const failed = ['failed', 'rejected', 'unsupported'].includes(result.outcome || '') || result.execution?.status === 'failed' || result.verification?.status === 'failed' || result.validation?.status === 'rejected';
   return <motion.section className={`answer-card ${clarification ? 'answer-clarification' : failed ? 'answer-warning' : 'answer-result'}`}
     initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.24 }}>
     <div className="answer-topline"><span className="eyebrow">RESPONSE FOR</span><span className="response-question">{question}</span><StatusBadge status={queryOutcome(result)} /></div>
@@ -73,6 +74,28 @@ function AnswerCard({ result, question }: { result: QueryResponse; question: str
     </>}
     {(result.warnings || []).map((warning, index) => <p className="response-warning" key={`${warning}-${index}`}><CircleAlert size={14} />{warning}</p>)}
   </motion.section>;
+}
+
+const clarificationQuestions: Record<string, { column: string; direction: string; question: string }> = {
+  'Highest account balance': {
+    column: 'C_ACCTBAL', direction: 'DESC',
+    question: 'Show the five customers with the highest account balances.',
+  },
+  'Customer name A–Z': {
+    column: 'C_NAME', direction: 'ASC',
+    question: 'Show the five customers ordered by customer name A–Z.',
+  },
+  'Customer key ascending': {
+    column: 'C_CUSTKEY', direction: 'ASC',
+    question: 'Show the five customers ordered by customer key ascending.',
+  },
+};
+
+function clarifiedQuestion(option: { label?: string; column?: string; direction?: string }) {
+  const supported = option.label ? clarificationQuestions[option.label] : undefined;
+  return supported && supported.column === option.column && supported.direction === option.direction
+    ? supported.question
+    : null;
 }
 
 function Overview({ onAsk }: { onAsk: () => void }) {
@@ -106,6 +129,7 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [apiReady, setApiReady] = useState<boolean | null>(null);
+  const [clarificationSubmitting, setClarificationSubmitting] = useState<string | null>(null);
   const inFlight = useRef(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const reduceMotion = useReducedMotion();
@@ -117,10 +141,8 @@ export default function App() {
     document.getElementById(navTargets[section])?.scrollIntoView?.({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'start' });
   };
 
-  const submit = async (event?: { preventDefault: () => void }) => {
-    event?.preventDefault();
+  const runSubmission = async (trimmed: string, choiceLabel?: string) => {
     if (inFlight.current) return;
-    const trimmed = question.trim();
     if (!trimmed) {
       setError('Enter a question before analyzing the data.');
       inputRef.current?.focus();
@@ -128,6 +150,7 @@ export default function App() {
     }
     inFlight.current = true;
     setLoading(true);
+    setClarificationSubmitting(choiceLabel || null);
     setError('');
     try {
       const response = await submitQuestion(trimmed);
@@ -141,18 +164,36 @@ export default function App() {
       setLastQuestion(trimmed);
       setHistory(current => [entry, ...current].slice(0, 20));
       setApiReady(true);
+      if (choiceLabel) {
+        document.getElementById('results-overview')?.scrollIntoView?.({
+          behavior: reduceMotion ? 'auto' : 'smooth', block: 'start',
+        });
+      }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'The DataMind request failed.');
     } finally {
       inFlight.current = false;
       setLoading(false);
+      setClarificationSubmitting(null);
     }
+  };
+
+  const submit = (event?: { preventDefault: () => void }) => {
+    event?.preventDefault();
+    void runSubmission(question.trim());
+  };
+
+  const selectClarification = (option: { label?: string; column?: string; direction?: string }) => {
+    const clarified = clarifiedQuestion(option);
+    if (!clarified || inFlight.current) return;
+    setQuestion(clarified);
+    void runSubmission(clarified, option.label);
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
-      void submit();
+      void runSubmission(question.trim());
     }
   };
 
@@ -196,7 +237,30 @@ export default function App() {
                 <div><small>EXECUTION</small><StatusBadge status={result.execution?.status} /></div>
                 <div><small>CONSISTENCY</small><StatusBadge status={result.verification?.status} /></div>
               </div></div>
-              <AnswerCard result={result} question={lastQuestion} />
+              {result.clarification?.required ? <motion.section key={`clarification-${lastQuestion}`} className="answer-card answer-clarification"
+                initial={reduceMotion ? false : { opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -5 }} transition={{ duration: reduceMotion ? 0 : 0.22 }}>
+                <div className="answer-topline"><span className="eyebrow">RESPONSE FOR</span><span className="response-question">{lastQuestion}</span><StatusBadge status={queryOutcome(result)} /></div>
+                <div className="clarification-content"><h3>One detail before I query</h3><p>{result.clarification.question || result.answer}</p>
+                  <div className="choice-list" role="group" aria-label="Choose how to rank customers">
+                    {result.clarification.options?.map((option, index) => {
+                      const clarified = clarifiedQuestion(option);
+                      const label = option.label || 'Option unavailable';
+                      const disabledReason = 'This option cannot be safely mapped to a supported customer query.';
+                      return <div className="clarification-choice" key={`${label}-${index}`}>
+                        <button type="button" className="choice-button" disabled={loading || !clarified}
+                          title={clarified ? label : disabledReason}
+                          aria-describedby={!clarified ? `clarification-unavailable-${index}` : undefined}
+                          onClick={() => selectClarification(option)}>
+                          {loading && clarificationSubmitting === label ? <><LoaderCircle className="spin" size={13} />Submitting {label}…</> : label}
+                        </button>
+                        {!clarified && <span id={`clarification-unavailable-${index}`} className="clarification-disabled-note">Unavailable: {disabledReason}</span>}
+                      </div>;
+                    })}
+                  </div>
+                  <span className="microcopy">No SQL was executed and no Snowflake query ID was created for this response. Choose an option to submit a clarified question.</span>
+                </div>
+                {(result.warnings || []).map((warning, index) => <p className="response-warning" key={`${warning}-${index}`}><CircleAlert size={14} />{warning}</p>)}
+              </motion.section> : <AnswerCard result={result} question={lastQuestion} />}
               <ResultsExplorer result={result} />
               <QueryReceipt result={result} />
               <SqlPanel result={result} />

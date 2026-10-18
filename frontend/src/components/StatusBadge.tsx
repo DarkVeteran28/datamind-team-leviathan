@@ -6,8 +6,10 @@ const statusMeta: Record<string, { label: string; className: string; icon: typeo
   succeeded: { label: 'Succeeded', className: 'status-passed', icon: Check },
   failed: { label: 'Failed', className: 'status-failed', icon: X },
   rejected: { label: 'Rejected', className: 'status-failed', icon: X },
+  unsupported: { label: 'Unsupported', className: 'status-skipped', icon: CircleSlash },
   skipped: { label: 'Skipped', className: 'status-skipped', icon: CircleSlash },
   not_run: { label: 'Not run', className: 'status-muted', icon: Clock3 },
+  no_query: { label: 'No query', className: 'status-muted', icon: Clock3 },
   not_available: { label: 'Not available', className: 'status-muted', icon: CircleHelp },
   unknown: { label: 'Unknown', className: 'status-muted', icon: CircleHelp },
 };

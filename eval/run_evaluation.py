@@ -8,7 +8,8 @@ sys.path.insert(0, str(ROOT / "src"))
 from datamind import pipeline
 
 FIELDS = {"answer", "sql", "columns", "rows", "query_id", "assumptions", "warnings", "row_count",
-          "validation", "execution", "verification", "clarification"}
+          "validation", "execution", "verification", "clarification", "sql_parameters",
+          "query_plan", "plan_validation", "outcome"}
 
 
 def run_case(case):
@@ -19,25 +20,25 @@ def run_case(case):
         calls["model"] += 1
         if "llm_error" in case:
             raise RuntimeError(case["llm_error"])
-        return {"sql": case["model_sql"], "assumptions": case.get("assumptions", [])}
+        return case["model_plan"]
 
-    def execute(_sql):
+    def execute(_sql, _parameters=None):
         calls["db"] += 1
         if "db_error" in case:
             raise RuntimeError(case["db_error"])
         return case.get("columns", []), case.get("rows", []), case.get("query_id")
 
-    original_generate = pipeline.llm.generate_sql
+    original_generate = pipeline.llm.generate_plan
     original_execute = pipeline.snowflake_client.execute_sql
     original_answer = pipeline._answer
-    pipeline.llm.generate_sql = generate
+    pipeline.llm.generate_plan = generate
     pipeline.snowflake_client.execute_sql = execute
     if "answer_override" in case:
         pipeline._answer = lambda _columns, _rows: case["answer_override"]
     try:
         result = pipeline.ask(case["question"])
     finally:
-        pipeline.llm.generate_sql = original_generate
+        pipeline.llm.generate_plan = original_generate
         pipeline.snowflake_client.execute_sql = original_execute
         pipeline._answer = original_answer
 
@@ -56,11 +57,7 @@ def run_case(case):
         failures.append(f"model calls={calls['model']}, expected {expected['model_calls']}")
     if calls["db"] != expected["db_calls"]:
         failures.append(f"database calls={calls['db']}, expected {expected['db_calls']}")
-    outcome = "success" if result.get("query_id") else (
-        "clarification" if result.get("warnings") and "Clarification required" in str(result["warnings"]) else
-        "rejected" if result.get("sql") and not calls["db"] else
-        "failed" if result.get("warnings") or calls["db"] else "no_query"
-    )
+    outcome = result.get("outcome")
     if outcome != expected["outcome"]:
         failures.append(f"outcome={outcome}, expected {expected['outcome']}")
     if "verification_status" in expected:
@@ -72,13 +69,19 @@ def run_case(case):
             failures.append(f"{response_field}.status={result.get(response_field, {}).get('status')}, expected {expected[field]}")
     if "query_id" in expected and result.get("query_id") != expected["query_id"]:
         failures.append(f"query_id={result.get('query_id')!r}, expected {expected['query_id']!r}")
-    for evidence_name in ("validation", "execution", "verification"):
+    for evidence_name in ("validation", "execution", "verification", "plan_validation"):
         for check_name, status in expected.get(f"{evidence_name}_checks", {}).items():
             check = next((item for item in result.get(evidence_name, {}).get("checks", [])
                           if item.get("name") == check_name), None)
             actual = check.get("status") if check else "missing"
             if actual != status:
                 failures.append(f"{evidence_name}.{check_name}={actual}, expected {status}")
+    if "sql_parameters" in expected and result.get("sql_parameters") != expected["sql_parameters"]:
+        failures.append(f"sql_parameters={result.get('sql_parameters')!r}, expected {expected['sql_parameters']!r}")
+    if "plan_validation_status" in expected:
+        actual = result.get("plan_validation", {}).get("status")
+        if actual != expected["plan_validation_status"]:
+            failures.append(f"plan_validation.status={actual}, expected {expected['plan_validation_status']}")
     for fragment in expected.get("warnings_contain", []):
         if fragment.casefold() not in str(result.get("warnings", [])).casefold():
             failures.append(f"warnings missing {fragment!r}")

@@ -69,7 +69,7 @@ The implementation in [`validator.py`](../src/datamind/validator.py), [`snowflak
 - The validator adds or caps `LIMIT` at 100. Snowflake execution sets a 30-second statement timeout and fetches at most 101 rows to detect overflow.
 - The client does not include connector exception text in its safe execution error. Do not publish environment values or exception dumps from local runs.
 
-These controls bound the supported query surface; they do not prove that SQL expresses the user’s intent, prevent all expensive query plans, or substitute for least-privilege Snowflake permissions. `LIMIT 100` bounds returned rows, not all server-side work. Review generated SQL, assumptions, warnings, result rows, and query ID.
+The model now returns a versioned typed plan; trusted Python validates it, compiles SQL from the fixed catalog, and sends filter values separately as bind parameters. The compiled statement still passes through SQLGlot validation. These controls bound the supported query surface; they do not prove that the plan expresses the user’s intent, prevent all expensive query plans, or substitute for least-privilege Snowflake permissions. `LIMIT 100` bounds returned rows, not all server-side work. Review the typed plan, compiled SQL, bound values, assumptions, warnings, result rows, and query ID.
 
 Trust Mode validation evidence reports checks actually performed. Answer verification compares the result row count and deterministic displayed values with returned data, and checks empty-result wording. Ranking-order verification is skipped because the answer composer makes no explicit ranking claim; semantic correctness is not run. Passing consistency checks does not prove query intent or model accuracy.
 
@@ -87,7 +87,7 @@ At the prompt, use a narrow supported question such as:
 Show five customers with the highest account balances.
 ```
 
-For a successful live query, record the displayed SQL, returned columns and rows, row count, query ID, assumptions, warnings, and the local model name. A successful-looking response without a query ID and returned result evidence is not evidence of successful live execution. Record failures as failures; never fill in expected values or query IDs.
+For a successful live query, record the typed plan, displayed parameterized SQL and bound values, returned columns and rows, row count, query ID, assumptions, warnings, and the local model name. Treat filter values according to their sensitivity when sharing records. A successful-looking response without a query ID and returned result evidence is not evidence of successful live execution. Record failures as failures; never fill in expected values or query IDs.
 
 ### Compact demo sequence
 
@@ -96,10 +96,10 @@ For a successful live query, record the displayed SQL, returned columns and rows
 3. **Unsafe SQL rejection:** the interactive CLI accepts natural-language questions, not raw SQL. Demonstrate the validator rejection in the mocked test instead:
 
    ```bash
-   python -m pytest -q tests/test_core_pipeline.py -k invalid_generated_sql
+   python -m pytest -q tests/test_core_pipeline.py -k model_supplied_sql_field_is_rejected_before_compilation
    ```
 
-   That test supplies an unapproved `C_ADDRESS` query from the mocked model and verifies it is rejected before database execution. Do not try to make the live model emit unsafe SQL as a demo step.
+   That test supplies an unexpected `sql` field in the mocked model plan and verifies the strict plan schema rejects it before SQL compilation or database execution. Direct SQL validator adversarial cases are tested separately. Do not try to make the live model emit unsafe SQL as a demo step.
 
 The separate `python snowflake_test.py` command in the README is a connection diagnostic, not an end-to-end natural-language query demonstration.
 
@@ -116,13 +116,13 @@ This confirms the observed query and result for the recorded run. It is not a ge
 
 ## Evidence capture and redaction
 
-For each live run, keep a record with: date/time and timezone, code revision, local model name, question, executed SQL, result columns/rows/count, DataMind query ID, direct worksheet query ID if compared, warnings, and outcome. Capture the app/terminal result and the matching Query History entry only if needed.
+For each live run, keep a record with: date/time and timezone, code revision, local model name, question, typed plan, parameterized SQL and bound values, result columns/rows/count, DataMind query ID, direct worksheet query ID if compared, warnings, and outcome. Capture the app/terminal result and the matching Query History entry only if needed.
 
 Before sharing screenshots or logs, remove passwords, tokens, account identifiers if private, usernames, connection strings, `.env` paths/content, and unrelated query history. Do not include raw environment dumps, stack traces, or credential-manager screens. Query IDs are useful trace evidence; share them only with people allowed to access that Snowflake account.
 
 ## Limitations
 
-- The offline cases use hand-authored SQL and fixture results; they measure checked behavior, not natural-language-to-SQL accuracy.
+- The offline cases use hand-authored typed plans and fixture results; they measure checked behavior, not natural-language-to-plan accuracy.
 - No automated check in this package proves live Gemma output quality, live Snowflake correctness, or semantic alignment with every user question.
 - Intent and ambiguity detection are rule-based and cover only selected patterns.
 - Ranking and semantic correctness are not established by the current deterministic answer verifier.

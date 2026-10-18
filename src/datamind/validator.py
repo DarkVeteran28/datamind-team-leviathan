@@ -85,6 +85,15 @@ def validate_sql_with_evidence(sql):
             _reject(checks, "approved_functions", f"Unsupported SQL function: {func.sql_name()}.")
     _record_pass(checks, "approved_functions", "Function calls are limited to approved aggregates.")
 
+    placeholders = list(tree.find_all(exp.Placeholder))
+    for placeholder in placeholders:
+        parent = placeholder.parent
+        if not (isinstance(parent, (exp.EQ, exp.NEQ, exp.GT, exp.GTE, exp.LT, exp.LTE))
+                and parent.expression is placeholder):
+            _reject(checks, "parameter_binding", "Parameters are allowed only as scalar comparison values.")
+    if placeholders:
+        _record_pass(checks, "parameter_binding", "Scalar comparison values are represented by bind placeholders.")
+
     limit = tree.args.get("limit")
     requested_limit = None
     if limit is None:

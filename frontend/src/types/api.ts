@@ -20,6 +20,10 @@ export interface ClarificationOption {
 export interface QueryResponse {
   answer: string;
   sql?: string | null;
+  sql_parameters?: unknown[];
+  query_plan?: Record<string, unknown> | null;
+  plan_validation?: StageEvidence;
+  outcome?: string;
   columns?: string[];
   rows?: unknown[][];
   query_id?: string | null;

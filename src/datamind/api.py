@@ -31,6 +31,10 @@ class Clarification(BaseModel):
 class QueryResponse(BaseModel):
     answer: str
     sql: Optional[str] = None
+    sql_parameters: List[Any] = Field(default_factory=list)
+    query_plan: Optional[Dict[str, Any]] = None
+    plan_validation: Dict[str, Any] = Field(default_factory=dict)
+    outcome: str = "no_query"
     columns: List[str] = Field(default_factory=list)
     rows: List[List[Any]] = Field(default_factory=list)
     query_id: Optional[str] = None

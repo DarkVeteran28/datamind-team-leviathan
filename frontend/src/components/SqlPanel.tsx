@@ -41,6 +41,7 @@ export function SqlPanel({ result }: { result: QueryResponse }) {
       <p className={`sql-label ${rejected ? 'text-amber' : ''}`}>{rejected ? 'Model proposal · rejected before execution' : result.validation?.status === 'passed' ? 'Validated SQL · submitted to Snowflake' : 'SQL proposal · execution not established'}</p>
       {expanded && <div className="sql-code-wrap"><pre className="line-numbers" aria-hidden="true">{sql.split('\n').map((_, i) => `${i + 1}`).join('\n')}</pre><pre className="sql-code"><code>{highlightSql(sql)}</code></pre></div>}
       <div className="sql-footer"><span>{result.execution?.status === 'succeeded' ? 'Execution succeeded' : rejected ? 'Not executed' : 'Execution status shown in Trust Mode'}</span><button className="text-button" onClick={copy} disabled={!expanded}>{copied ? <Check size={14} /> : <Copy size={14} />}{copied ? 'Copied' : 'Copy SQL'}</button></div>
+      {result.sql_parameters?.length ? <div className="sql-parameters"><span className="eyebrow">BOUND FILTER VALUES</span><div>{result.sql_parameters.map((value, index) => <code key={index}>?{index + 1} = {value == null ? 'NULL' : String(value)}</code>)}</div></div> : null}
       <p className="microcopy">One approved table · four allowlisted columns · maximum 100 returned rows</p>
     </>}
   </section>;

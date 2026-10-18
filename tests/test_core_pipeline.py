@@ -14,15 +14,23 @@ from datamind.validator import validate_sql, validate_sql_with_evidence
 
 
 FIELDS = {"answer", "sql", "columns", "rows", "query_id", "assumptions", "warnings", "row_count",
-          "validation", "execution", "verification", "clarification"}
+          "validation", "execution", "verification", "clarification", "sql_parameters",
+          "query_plan", "plan_validation", "outcome"}
 
 
 def _check(evidence, name):
     return next(item for item in evidence["checks"] if item["name"] == name)
 
 
+def _plan(**overrides):
+    plan = {"version": 1, "status": "query", "dimensions": [], "metrics": [], "filters": [],
+            "sort": [], "limit": None, "assumptions": []}
+    plan.update(overrides)
+    return plan
+
+
 def test_response_has_stable_shape_and_greeting_skips_services(monkeypatch):
-    monkeypatch.setattr(pipeline.llm, "generate_sql", lambda _: pytest.fail("LLM should not be called"))
+    monkeypatch.setattr(pipeline.llm, "generate_plan", lambda _: pytest.fail("LLM should not be called"))
     monkeypatch.setattr(pipeline.snowflake_client, "execute_sql", lambda _: pytest.fail("Snowflake should not be called"))
     result = pipeline.ask("Hello")
     assert set(result) == FIELDS
@@ -37,7 +45,7 @@ def test_response_has_stable_shape_and_greeting_skips_services(monkeypatch):
     "Show me the top customers by spending frequency",
 ])
 def test_ambiguous_data_request_clarifies_without_query(monkeypatch, question):
-    monkeypatch.setattr(pipeline.llm, "generate_sql", lambda _: pytest.fail("LLM should not be called"))
+    monkeypatch.setattr(pipeline.llm, "generate_plan", lambda _: pytest.fail("LLM should not be called"))
     monkeypatch.setattr(pipeline.snowflake_client, "execute_sql", lambda _: pytest.fail("Snowflake should not be called"))
     result = pipeline.ask(question)
     assert result["clarification"]["required"] is True
@@ -52,7 +60,8 @@ def test_ambiguous_data_request_clarifies_without_query(monkeypatch, question):
 
 
 def test_clear_account_balance_ranking_is_not_clarified(monkeypatch):
-    monkeypatch.setattr(pipeline.llm, "generate_sql", lambda _: {"sql": "SELECT C_CUSTKEY, C_ACCTBAL FROM CUSTOMER ORDER BY C_ACCTBAL DESC LIMIT 1"})
+    monkeypatch.setattr(pipeline.llm, "generate_plan", lambda _: _plan(
+        dimensions=["C_CUSTKEY", "C_ACCTBAL"], sort=[{"field": "C_ACCTBAL", "direction": "DESC"}], limit=1))
     monkeypatch.setattr(pipeline.snowflake_client, "execute_sql", lambda _: (["C_CUSTKEY", "C_ACCTBAL"], [(4, 950.0)], "qid-clear-ranking"))
     result = pipeline.ask("Show me the best customers by account balance")
     assert result["clarification"]["required"] is False
@@ -91,6 +100,8 @@ def test_validation_evidence_reports_actual_limit_cap():
     "SELECT C_CUSTKEY FROM CUSTOMER LIMIT 0",
     "SELECT C_CUSTKEY FROM CUSTOMER LIMIT -1",
     "SELECT C_CUSTKEY FROM CUSTOMER WHERE C_CUSTKEY IN (SELECT C_CUSTKEY FROM CUSTOMER)",
+    "SELECT ? FROM CUSTOMER",
+    "SELECT C_CUSTKEY FROM CUSTOMER WHERE C_CUSTKEY IN (?)",
 ])
 def test_unsafe_sql_is_rejected(sql):
     with pytest.raises(ValueError):
@@ -98,15 +109,15 @@ def test_unsafe_sql_is_rejected(sql):
 
 
 def test_pipeline_returns_actual_rows_sql_and_query_id(monkeypatch):
-    monkeypatch.setattr(pipeline.llm, "generate_sql", lambda _: {
-        "sql": "SELECT C_CUSTKEY, C_NAME FROM CUSTOMER LIMIT 2",
-        "assumptions": "ordered by key",
-    })
+    monkeypatch.setattr(pipeline.llm, "generate_plan", lambda _: _plan(
+        dimensions=["C_CUSTKEY", "C_NAME"], sort=[{"field": "C_CUSTKEY", "direction": "ASC"}],
+        limit=2, assumptions=["ordered by key"]))
     monkeypatch.setattr(pipeline.snowflake_client, "execute_sql", lambda _: (
         ["C_CUSTKEY", "C_NAME"], [(7, "Alpha"), (9, "Beta")], "qid-actual",
     ))
     result = pipeline.ask("Show two customers")
-    assert result["sql"] == "SELECT C_CUSTKEY, C_NAME FROM CUSTOMER LIMIT 2"
+    assert "SELECT C_CUSTKEY, C_NAME FROM SNOWFLAKE_SAMPLE_DATA.TPCH_SF1.CUSTOMER" in result["sql"]
+    assert "ORDER BY C_CUSTKEY ASC LIMIT 2" in result["sql"]
     assert result["columns"] == ["C_CUSTKEY", "C_NAME"]
     assert result["rows"] == [[7, "Alpha"], [9, "Beta"]]
     assert result["query_id"] == "qid-actual"
@@ -126,23 +137,48 @@ def test_pipeline_returns_actual_rows_sql_and_query_id(monkeypatch):
     assert _check(result["verification"], "semantic_correctness")["status"] == "not_run"
 
 
-def test_invalid_generated_sql_is_not_executed_and_is_retained(monkeypatch):
-    monkeypatch.setattr(pipeline.llm, "generate_sql", lambda _: {"sql": "SELECT C_ADDRESS FROM CUSTOMER"})
+def test_pipeline_passes_filter_values_separately_from_compiled_sql(monkeypatch):
+    value = "BUILDING' OR 1=1 --"
+    monkeypatch.setattr(pipeline.llm, "generate_plan", lambda _: _plan(
+        dimensions=["C_CUSTKEY"],
+        filters=[{"field": "C_MKTSEGMENT", "operator": "eq", "value": value}],
+    ))
+    calls = []
+
+    def execute(sql, parameters):
+        calls.append((sql, parameters))
+        return ["C_CUSTKEY"], [(4,)], "qid-bound"
+
+    monkeypatch.setattr(pipeline.snowflake_client, "execute_sql", execute)
+    result = pipeline.ask("Find this customer")
+
+    assert "C_MKTSEGMENT = ?" in result["sql"]
+    assert value not in result["sql"]
+    assert result["sql_parameters"] == [value]
+    assert calls == [(result["sql"], [value])]
+    assert result["query_id"] == "qid-bound"
+    assert _check(result["validation"], "parameter_binding")["status"] == "passed"
+
+
+def test_model_supplied_sql_field_is_rejected_before_compilation(monkeypatch):
+    monkeypatch.setattr(pipeline.llm, "generate_plan", lambda _: {"version": 1, "status": "query", "sql": "SELECT C_ADDRESS FROM CUSTOMER"})
     monkeypatch.setattr(pipeline.snowflake_client, "execute_sql", lambda _: pytest.fail("invalid SQL reached Snowflake"))
     result = pipeline.ask("Show addresses")
-    assert result["sql"] == "SELECT C_ADDRESS FROM CUSTOMER"
+    assert result["sql"] is None
     assert result["query_id"] is None
-    assert "validation failed" in result["answer"]
+    assert "rejected before SQL compilation" in result["answer"]
     assert result["warnings"]
-    assert result["validation"]["status"] == "rejected"
-    assert _check(result["validation"], "approved_columns")["status"] == "failed"
+    assert result["plan_validation"]["status"] == "rejected"
+    assert _check(result["plan_validation"], "plan_schema")["status"] == "failed"
+    assert result["validation"] == {"status": "not_run", "checks": []}
     assert result["execution"] == {"status": "not_run", "checks": []}
     assert result["verification"] == {"status": "not_run", "checks": []}
 
 
 def test_empty_result_is_success_without_fabricated_values(monkeypatch):
-    monkeypatch.setattr(pipeline.llm, "generate_sql", lambda _: {"sql": "SELECT C_CUSTKEY FROM CUSTOMER WHERE C_CUSTKEY = -1"})
-    monkeypatch.setattr(pipeline.snowflake_client, "execute_sql", lambda _: (["C_CUSTKEY"], [], "qid-empty"))
+    monkeypatch.setattr(pipeline.llm, "generate_plan", lambda _: _plan(
+        dimensions=["C_CUSTKEY"], filters=[{"field": "C_CUSTKEY", "operator": "eq", "value": -1}]))
+    monkeypatch.setattr(pipeline.snowflake_client, "execute_sql", lambda *args: (["C_CUSTKEY"], [], "qid-empty"))
     result = pipeline.ask("Find key minus one")
     assert result["answer"] == "The query completed successfully and returned no rows."
     assert result["rows"] == [] and result["row_count"] == 0
@@ -174,7 +210,7 @@ def test_verifier_marks_unavailable_checks_honestly():
 
 
 def test_llm_failure_is_structured_and_does_not_call_snowflake(monkeypatch):
-    monkeypatch.setattr(pipeline.llm, "generate_sql", lambda _: (_ for _ in ()).throw(TimeoutError()))
+    monkeypatch.setattr(pipeline.llm, "generate_plan", lambda _: (_ for _ in ()).throw(TimeoutError()))
     monkeypatch.setattr(pipeline.snowflake_client, "execute_sql", lambda _: pytest.fail("Snowflake should not be called"))
     result = pipeline.ask("Count customers")
     assert set(result) == FIELDS
@@ -184,7 +220,7 @@ def test_llm_failure_is_structured_and_does_not_call_snowflake(monkeypatch):
 
 
 def test_database_failure_preserves_sql_and_available_query_id(monkeypatch):
-    monkeypatch.setattr(pipeline.llm, "generate_sql", lambda _: {"sql": "SELECT C_CUSTKEY FROM CUSTOMER"})
+    monkeypatch.setattr(pipeline.llm, "generate_plan", lambda _: _plan(dimensions=["C_CUSTKEY"]))
     def failed(_):
         raise snowflake_client.SnowflakeExecutionError("qid-failed")
     monkeypatch.setattr(pipeline.snowflake_client, "execute_sql", failed)
@@ -198,7 +234,7 @@ def test_database_failure_preserves_sql_and_available_query_id(monkeypatch):
 
 
 def test_llm_failure_does_not_claim_validation_execution_or_verification(monkeypatch):
-    monkeypatch.setattr(pipeline.llm, "generate_sql", lambda _: (_ for _ in ()).throw(TimeoutError("sensitive detail")))
+    monkeypatch.setattr(pipeline.llm, "generate_plan", lambda _: (_ for _ in ()).throw(TimeoutError("sensitive detail")))
     monkeypatch.setattr(pipeline.snowflake_client, "execute_sql", lambda _: pytest.fail("Snowflake should not be called"))
     result = pipeline.ask("Count customers")
     assert result["validation"] == {"status": "not_run", "checks": []}
@@ -214,11 +250,11 @@ def test_ollama_http_response_is_parsed(monkeypatch):
         def __exit__(self, *_):
             return False
         def read(self):
-            return json.dumps({"message": {"content": json.dumps({"sql": "SELECT C_CUSTKEY FROM CUSTOMER", "assumptions": []})}}).encode()
+            return json.dumps({"message": {"content": json.dumps(_plan(dimensions=["C_CUSTKEY"]))}}).encode()
 
     monkeypatch.setattr(llm.urllib.request, "urlopen", lambda request, timeout: Response())
-    result = llm.generate_sql("show keys")
-    assert result["sql"] == "SELECT C_CUSTKEY FROM CUSTOMER"
+    result = llm.generate_plan("show keys")
+    assert result["dimensions"] == ["C_CUSTKEY"]
 
 
 def test_snowflake_client_sets_timeout_and_returns_query_id(monkeypatch):
@@ -230,8 +266,8 @@ def test_snowflake_client_sets_timeout_and_returns_query_id(monkeypatch):
             return self
         def __exit__(self, *_):
             return False
-        def execute(self, sql):
-            calls.append(sql)
+        def execute(self, sql, parameters=None):
+            calls.append((sql, parameters))
         def fetchmany(self, count):
             assert count == 101
             return [(12,)]
@@ -246,6 +282,7 @@ def test_snowflake_client_sets_timeout_and_returns_query_id(monkeypatch):
         "SNOWFLAKE_PASSWORD": "never-print", "SNOWFLAKE_WAREHOUSE": "test-warehouse",
     }.items():
         monkeypatch.setenv(key, value)
-    columns, rows, query_id = snowflake_client.execute_sql("SELECT C_CUSTKEY FROM CUSTOMER LIMIT 1")
-    assert calls[0] == "ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = 30"
+    columns, rows, query_id = snowflake_client.execute_sql("SELECT C_CUSTKEY FROM CUSTOMER WHERE C_CUSTKEY = ? LIMIT 1", [12])
+    assert calls[0][0] == "ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = 30"
+    assert calls[2] == ("SELECT C_CUSTKEY FROM CUSTOMER WHERE C_CUSTKEY = %s LIMIT 1", (12,))
     assert rows == [(12,)] and query_id == "qid-from-snowflake"

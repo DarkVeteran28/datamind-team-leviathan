@@ -4,6 +4,11 @@ import re
 from dotenv import load_dotenv
 
 from . import llm, snowflake_client
+from .semantic_query import (
+    PlanValidationError,
+    compile_query_plan,
+    validate_query_plan,
+)
 from .validator import SQLValidationError, validate_sql_with_evidence
 
 load_dotenv()
@@ -116,7 +121,9 @@ def _verify_answer(answer, columns, rows, row_count):
 
 def ask(question):
     """Answer a question as a dictionary with SQL and Snowflake evidence."""
-    base = {"answer": "", "sql": None, "columns": [], "rows": [], "query_id": None,
+    base = {"answer": "", "sql": None, "sql_parameters": [], "query_plan": None,
+            "plan_validation": {"status": "not_run", "checks": []},
+            "outcome": "no_query", "columns": [], "rows": [], "query_id": None,
             "assumptions": [], "warnings": [], "row_count": 0,
             "validation": {"status": "not_run", "checks": []},
             "execution": {"status": "not_run", "checks": []},
@@ -136,6 +143,7 @@ def ask(question):
         question = "How should I define “best” or “top”? Choose highest account balance, customer name A–Z, or customer key ascending."
         base["answer"] = question
         base["warnings"] = ["Clarification required before querying."]
+        base["outcome"] = "clarification"
         base["clarification"] = {
             "required": True,
             "question": question,
@@ -147,30 +155,56 @@ def ask(question):
         }
         return base
     try:
-        generated = llm.generate_sql(question)
-        assumptions = generated.get("assumptions", [])
-        if isinstance(assumptions, str):
-            assumptions = [assumptions]
-        base["assumptions"] = [str(item) for item in assumptions] if isinstance(assumptions, list) else []
-        base["sql"] = generated.get("sql")
+        generated = llm.generate_plan(question)
     except Exception as exc:
-        base["answer"] = "I couldn’t complete the request because SQL generation or validation failed."
-        base["warnings"] = [f"SQL generation failed ({type(exc).__name__})."]
+        base["answer"] = "I couldn’t complete the request because query-plan generation failed."
+        base["warnings"] = [f"Query-plan generation failed ({type(exc).__name__})."]
+        base["outcome"] = "failed"
         return base
     try:
+        plan, base["plan_validation"] = validate_query_plan(generated)
+    except PlanValidationError as exc:
+        base["plan_validation"] = exc.evidence
+        base["answer"] = "The generated query plan was rejected before SQL compilation."
+        base["warnings"] = ["Query-plan validation failed: the plan is malformed or unsupported."]
+        base["outcome"] = "rejected"
+        return base
+    base["query_plan"] = plan.model_dump(mode="json")
+    base["assumptions"] = list(plan.assumptions)
+    if plan.status == "clarification":
+        base["answer"] = plan.message or "Please clarify what data you want to inspect."
+        base["clarification"] = {
+            "required": True,
+            "question": base["answer"],
+            "options": [],
+        }
+        base["warnings"] = ["Clarification required before query compilation."]
+        base["outcome"] = "clarification"
+        return base
+    if plan.status == "unsupported":
+        base["answer"] = "This request is outside the supported CUSTOMER fields and query operations."
+        base["warnings"] = ["The query plan marked this request as unsupported."]
+        base["outcome"] = "unsupported"
+        return base
+    try:
+        base["sql"], base["sql_parameters"] = compile_query_plan(plan)
         base["sql"], base["validation"] = validate_sql_with_evidence(base["sql"])
     except SQLValidationError as exc:
         base["validation"] = exc.evidence
-        base["answer"] = "I couldn’t complete the request because SQL validation failed: the generated query was rejected."
-        base["warnings"] = [str(exc)]
+        base["answer"] = "The compiled SQL was rejected by the safety validator before execution."
+        base["warnings"] = ["SQL validation failed: the compiled statement did not pass safety checks."]
+        base["outcome"] = "rejected"
         return base
     except Exception as exc:
-        base["validation"] = {"status": "rejected", "checks": []}
-        base["answer"] = "I couldn’t complete the request because SQL validation failed."
-        base["warnings"] = [f"SQL validation failed ({type(exc).__name__})."]
+        base["answer"] = "The query plan could not be compiled into a supported SQL statement."
+        base["warnings"] = [f"SQL compilation failed ({type(exc).__name__})."]
+        base["outcome"] = "rejected"
         return base
     try:
-        columns, rows, query_id = snowflake_client.execute_sql(base["sql"])
+        if base["sql_parameters"]:
+            columns, rows, query_id = snowflake_client.execute_sql(base["sql"], base["sql_parameters"])
+        else:
+            columns, rows, query_id = snowflake_client.execute_sql(base["sql"])
         columns = list(columns)
         rows = [list(row) for row in rows]
         base.update(columns=columns, rows=rows, query_id=query_id, row_count=len(rows))
@@ -181,6 +215,7 @@ def ask(question):
         base["execution"] = {"status": "succeeded", "checks": [
             {"name": "snowflake_execution", "status": "passed", "detail": "Snowflake returned result metadata and rows."}
         ]}
+        base["outcome"] = "success"
         base["verification"] = _verify_answer(base["answer"], columns, rows, base["row_count"])
         if base["verification"]["status"] == "failed":
             base["warnings"].append("Answer/result consistency verification failed.")
@@ -191,4 +226,5 @@ def ask(question):
         base["execution"] = {"status": "failed", "checks": [
             {"name": "snowflake_execution", "status": "failed", "detail": "Snowflake did not return a complete result."}
         ]}
+        base["outcome"] = "failed"
     return base
