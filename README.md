@@ -6,6 +6,8 @@
 
 **Keep in mind.** The goal is not fluent text. The system must meaningfully work with data (retrieve, query, analyse) and make its answers understandable and trustworthy. Think broadly about data types, industries and users: business intelligence, operations, research, education, finance and decision-making are all fair game. Unlike a chatbot that produces plausible text, a data agent computes answers from the real data, shows the query, rows or sources, flags gaps, and changes its answer when the data changes.
 
+---
+
 [README.md](https://github.com/user-attachments/files/33623777/README.md)<div align="center">
 
 # 🐉 DataMind: Talk to Your Data
