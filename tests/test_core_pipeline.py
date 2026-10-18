@@ -14,7 +14,7 @@ from datamind.validator import validate_sql, validate_sql_with_evidence
 
 
 FIELDS = {"answer", "sql", "columns", "rows", "query_id", "assumptions", "warnings", "row_count",
-          "validation", "execution", "verification"}
+          "validation", "execution", "verification", "clarification"}
 
 
 def _check(evidence, name):
@@ -30,11 +30,33 @@ def test_response_has_stable_shape_and_greeting_skips_services(monkeypatch):
     assert result["query_id"] is None
 
 
-def test_ambiguous_data_request_clarifies_without_query(monkeypatch):
+@pytest.mark.parametrize("question", [
+    "Show me the best customers",
+    "Show me the top customers",
+    "Show me the top customers in the BUILDING segment",
+    "Show me the top customers by spending frequency",
+])
+def test_ambiguous_data_request_clarifies_without_query(monkeypatch, question):
     monkeypatch.setattr(pipeline.llm, "generate_sql", lambda _: pytest.fail("LLM should not be called"))
-    result = pipeline.ask("Who are our best customers?")
-    assert "define" in result["answer"]
+    monkeypatch.setattr(pipeline.snowflake_client, "execute_sql", lambda _: pytest.fail("Snowflake should not be called"))
+    result = pipeline.ask(question)
+    assert result["clarification"]["required"] is True
+    assert result["clarification"]["question"] == result["answer"]
+    assert [option["column"] for option in result["clarification"]["options"]] == ["C_ACCTBAL", "C_NAME", "C_CUSTKEY"]
+    assert "frequency" not in result["answer"].lower()
+    assert result["sql"] is None and result["query_id"] is None
+    assert result["validation"] == {"status": "not_run", "checks": []}
+    assert result["execution"] == {"status": "not_run", "checks": []}
+    assert result["verification"] == {"status": "not_run", "checks": []}
     assert "Clarification required before querying." in result["warnings"]
+
+
+def test_clear_account_balance_ranking_is_not_clarified(monkeypatch):
+    monkeypatch.setattr(pipeline.llm, "generate_sql", lambda _: {"sql": "SELECT C_CUSTKEY, C_ACCTBAL FROM CUSTOMER ORDER BY C_ACCTBAL DESC LIMIT 1"})
+    monkeypatch.setattr(pipeline.snowflake_client, "execute_sql", lambda _: (["C_CUSTKEY", "C_ACCTBAL"], [(4, 950.0)], "qid-clear-ranking"))
+    result = pipeline.ask("Show me the best customers by account balance")
+    assert result["clarification"]["required"] is False
+    assert result["query_id"] == "qid-clear-ranking"
 
 
 @pytest.mark.parametrize("sql", [

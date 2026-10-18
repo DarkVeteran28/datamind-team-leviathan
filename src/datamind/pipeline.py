@@ -1,4 +1,6 @@
 """DataMind's user-facing question pipeline."""
+import re
+
 from dotenv import load_dotenv
 
 from . import llm, snowflake_client
@@ -13,8 +15,18 @@ def _intent(question):
         return "greeting"
     if any(phrase in text for phrase in ("who are you", "what are you", "what can you do", "your capabilities", "tell me about yourself")):
         return "identity"
-    # Terms whose meaning depends on an unstated metric, order, or threshold.
-    if any(term in text for term in ("best customer", "top customer", "high value", "valuable customer", "good customer", "most important")) and not any(metric in text for metric in ("balance", "account balance", "name", "key", "segment")):
+    ranking_request = any(term in text for term in (
+        "best customer", "top customer", "high value", "valuable customer",
+        "good customer", "most important customer",
+    ))
+    # Balance is the implemented value metric. Name/key only count when the
+    # user explicitly says to order by that supported column; a segment filter
+    # alone does not define what makes a customer "best".
+    has_supported_metric = "balance" in text or "c_acctbal" in text or bool(re.search(
+        r"\b(?:by|based on|ordered by|sorted by)\s+(?:the\s+)?(?:customer\s+)?(?:name|key)\b|\b(?:c_name|c_custkey)\b",
+        text,
+    ))
+    if ranking_request and not has_supported_metric:
         return "ambiguous"
     return "data"
 
@@ -47,7 +59,8 @@ def ask(question):
             "assumptions": [], "warnings": [], "row_count": 0,
             "validation": {"status": "not_run", "checks": []},
             "execution": {"status": "not_run", "checks": []},
-            "verification": {"status": "not_run", "checks": []}}
+            "verification": {"status": "not_run", "checks": []},
+            "clarification": {"required": False, "question": None, "options": []}}
     if not isinstance(question, str) or not question.strip():
         base.update(answer="Please enter a question.", warnings=["Question is empty."])
         return base
@@ -59,8 +72,18 @@ def ask(question):
         base["answer"] = "I’m DataMind, an assistant that answers questions about the Snowflake TPC-H CUSTOMER dataset. I can query customer key, name, account balance, and market segment."
         return base
     if intent == "ambiguous":
-        base["answer"] = "How should I define that—for example, by highest account balance or by a particular market segment?"
+        question = "How should I define “best” or “top”? Choose highest account balance, customer name A–Z, or customer key ascending."
+        base["answer"] = question
         base["warnings"] = ["Clarification required before querying."]
+        base["clarification"] = {
+            "required": True,
+            "question": question,
+            "options": [
+                {"label": "Highest account balance", "column": "C_ACCTBAL", "direction": "DESC"},
+                {"label": "Customer name A–Z", "column": "C_NAME", "direction": "ASC"},
+                {"label": "Customer key ascending", "column": "C_CUSTKEY", "direction": "ASC"},
+            ],
+        }
         return base
     try:
         generated = llm.generate_sql(question)
