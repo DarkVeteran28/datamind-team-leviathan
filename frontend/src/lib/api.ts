@@ -1,4 +1,4 @@
-import type { QueryRequest, QueryResponse } from '../types/api';
+import type { DatasetCatalogResponse, QueryRequest, QueryResponse } from '../types/api';
 
 const API_BASE = (import.meta.env.VITE_DATAMIND_API_URL || 'http://127.0.0.1:8000').replace(/\/$/, '');
 const REQUEST_TIMEOUT_MS = 150_000;
@@ -10,8 +10,8 @@ export class ApiError extends Error {
   }
 }
 
-export async function submitQuestion(question: string): Promise<QueryResponse> {
-  const request: QueryRequest = { question: question.trim() };
+export async function submitQuestion(question: string, datasetId = 'tpch_customer'): Promise<QueryResponse> {
+  const request: QueryRequest = { question: question.trim(), dataset_id: datasetId };
   if (!request.question) throw new ApiError('Enter a question before submitting.');
 
   const controller = new AbortController();
@@ -43,6 +43,12 @@ export async function submitQuestion(question: string): Promise<QueryResponse> {
   } finally {
     window.clearTimeout(timer);
   }
+}
+
+export async function getDatasetCatalog(): Promise<DatasetCatalogResponse> {
+  const response = await fetch(`${API_BASE}/api/datasets`);
+  if (!response.ok) throw new ApiError('The DataMind dataset catalog is unavailable.', response.status);
+  return await response.json() as DatasetCatalogResponse;
 }
 
 export async function checkApiProcess(): Promise<boolean> {

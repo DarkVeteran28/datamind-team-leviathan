@@ -1,6 +1,7 @@
 """Fail-closed validation for the narrowly scoped CUSTOMER query surface."""
 import sqlglot
 from sqlglot import exp
+from .dataset_registry import DATASETS, DEFAULT_DATASET_ID
 
 TABLE = "SNOWFLAKE_SAMPLE_DATA.TPCH_SF1.CUSTOMER"
 ALLOWED_COLUMNS = {"C_CUSTKEY", "C_NAME", "C_ACCTBAL", "C_MKTSEGMENT"}
@@ -24,9 +25,38 @@ def _reject(checks, name, message):
     raise SQLValidationError(message, {"status": "rejected", "checks": list(checks)})
 
 
-def validate_sql_with_evidence(sql):
+_FILTER_COMPARISONS = (exp.EQ, exp.NEQ, exp.GT, exp.GTE, exp.LT, exp.LTE)
+
+
+def _safe_filter_conjunction(node):
+    """Allow compiler-style AND chains over approved scalar filter comparisons."""
+    if isinstance(node, exp.Paren):
+        return _safe_filter_conjunction(node.this)
+    if isinstance(node, exp.And):
+        return (_safe_filter_conjunction(node.this)
+                and _safe_filter_conjunction(node.expression))
+    if isinstance(node, _FILTER_COMPARISONS):
+        return (isinstance(node.this, exp.Column)
+                and isinstance(node.expression, (exp.Literal, exp.Placeholder)))
+    return False
+
+
+def validate_sql_with_evidence(sql, dataset_id=DEFAULT_DATASET_ID):
     """Return normalized SQL and evidence from the validator's actual checks."""
     checks = []
+    dataset = DATASETS.get(dataset_id)
+    if dataset is None:
+        _reject(checks, "registered_dataset", "The selected dataset is not registered.")
+    if dataset_id == DEFAULT_DATASET_ID:
+        allowed_table = TABLE
+        allowed_columns = ALLOWED_COLUMNS
+        dialect = "snowflake"
+        expected_table = ("CUSTOMER", "TPCH_SF1", "SNOWFLAKE_SAMPLE_DATA")
+    else:
+        allowed_table = "electricity_mix"
+        allowed_columns = set(dataset["fields"])
+        dialect = "sqlite"
+        expected_table = ("ELECTRICITY_MIX", "", "")
     if not isinstance(sql, str) or not sql.strip():
         _reject(checks, "sql_input", "SQL must be a non-empty string.")
     sql = sql.strip()
@@ -35,7 +65,7 @@ def validate_sql_with_evidence(sql):
     if not sql or ";" in sql:
         _reject(checks, "single_statement", "Only one SQL statement is permitted.")
     try:
-        statements = sqlglot.parse(sql, read="snowflake")
+        statements = sqlglot.parse(sql, read=dialect)
     except sqlglot.errors.ParseError as exc:
         _reject(checks, "sql_parse", "SQL could not be parsed safely.")
     if len(statements) != 1 or statements[0] is None:
@@ -58,14 +88,33 @@ def validate_sql_with_evidence(sql):
             _reject(checks, "supported_constructs", f"Unsupported SELECT clause: {arg_name}.")
     _record_pass(checks, "supported_constructs", "No unsupported structures or SELECT clauses were found.")
 
+    where_clause = tree.args.get("where")
+    where_expression = where_clause.this if where_clause is not None else None
+    and_nodes = list(tree.find_all(exp.And))
+    or_nodes = list(tree.find_all(exp.Or))
+    not_nodes = list(tree.find_all(exp.Not))
+    if or_nodes or not_nodes:
+        _reject(checks, "logical_operators", "OR and NOT expressions are not supported.")
+    if and_nodes:
+        where_and_nodes = list(where_expression.find_all(exp.And)) if where_expression is not None else []
+        if len(where_and_nodes) != len(and_nodes) or not _safe_filter_conjunction(where_expression):
+            _reject(checks, "logical_operators", "AND is allowed only to combine scalar comparisons in WHERE filters.")
+        _record_pass(checks, "logical_operators", "AND combines only scalar comparisons in WHERE filters.")
+    else:
+        _record_pass(checks, "logical_operators", "No logical operators require validation.")
+
     tables = list(tree.find_all(exp.Table))
     if len(tables) != 1:
         _reject(checks, "approved_table", "Query must reference only the approved CUSTOMER table.")
     table = tables[0]
-    if (table.name.upper() != "CUSTOMER" or (table.db and table.db.upper() != "TPCH_SF1")
-            or (table.catalog and table.catalog.upper() != "SNOWFLAKE_SAMPLE_DATA")):
+    table_name, schema_name, catalog_name = expected_table
+    if (table.name.upper() != table_name
+            or (table.db and table.db.upper() != schema_name)
+            or (table.catalog and table.catalog.upper() != catalog_name)):
         _reject(checks, "approved_table", "Query references an unapproved table.")
-    _record_pass(checks, "approved_table", f"Only {TABLE} is referenced.")
+    detail = (f"Only {TABLE} is referenced." if dataset_id == DEFAULT_DATASET_ID
+              else f"Only {allowed_table} is referenced for {dataset_id}.")
+    _record_pass(checks, "approved_table", detail)
 
     for star in tree.find_all(exp.Star):
         if not isinstance(star.parent, exp.Count):
@@ -73,7 +122,7 @@ def validate_sql_with_evidence(sql):
     for column in tree.find_all(exp.Column):
         if column.name == "*":
             continue
-        if column.name.upper() not in ALLOWED_COLUMNS:
+        if column.name.upper() not in allowed_columns:
             _reject(checks, "approved_columns", f"Unapproved column: {column.name}.")
         if column.table and column.table.upper() not in {table.alias_or_name.upper(), "CUSTOMER"}:
             _reject(checks, "approved_columns", f"Unapproved column qualifier: {column.table}.")
@@ -81,6 +130,10 @@ def validate_sql_with_evidence(sql):
 
     aggregates = {"COUNT", "SUM", "AVG", "MIN", "MAX"}
     for func in tree.find_all(exp.Func):
+        # SQLGlot represents AND as a Func subclass. It is exempted here only
+        # after the logical_operators check proved its WHERE context safe.
+        if isinstance(func, exp.And):
+            continue
         if func.sql_name().upper() not in aggregates:
             _reject(checks, "approved_functions", f"Unsupported SQL function: {func.sql_name()}.")
     _record_pass(checks, "approved_functions", "Function calls are limited to approved aggregates.")
@@ -115,10 +168,10 @@ def validate_sql_with_evidence(sql):
         limit_detail = f"LIMIT {requested_limit} is within the {MAX_ROWS}-row maximum."
     _record_pass(checks, "row_limit", limit_detail)
 
-    return tree.sql(dialect="snowflake"), {"status": "passed", "checks": checks}
+    return tree.sql(dialect=dialect), {"status": "passed", "checks": checks}
 
 
-def validate_sql(sql):
+def validate_sql(sql, dataset_id=DEFAULT_DATASET_ID):
     """Validate SQL and return its normalized form (legacy public interface)."""
-    normalized, _ = validate_sql_with_evidence(sql)
+    normalized, _ = validate_sql_with_evidence(sql, dataset_id)
     return normalized

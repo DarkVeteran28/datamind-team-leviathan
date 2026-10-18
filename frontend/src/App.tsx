@@ -11,17 +11,22 @@ import { Resources } from './components/Resources';
 import { SqlPanel } from './components/SqlPanel';
 import { StatusBadge } from './components/StatusBadge';
 import { TrustPanel } from './components/TrustPanel';
-import { checkApiProcess, submitQuestion } from './lib/api';
-import type { HistoryEntry, QueryResponse } from './types/api';
+import { checkApiProcess, getDatasetCatalog, submitQuestion } from './lib/api';
+import type { DatasetMetadata, HistoryEntry, QueryResponse } from './types/api';
 import './styles.css';
 
 const MODEL = import.meta.env.VITE_DATAMIND_MODEL || 'gemma3:4b';
-const DATASET = 'SNOWFLAKE_SAMPLE_DATA.TPCH_SF1.CUSTOMER';
-const EXAMPLES = [
+const DEFAULT_DATASET_ID = 'tpch_customer';
+const CUSTOMER_EXAMPLES = [
   'Show the five customers with the highest account balances.',
   'Count customers by market segment.',
   'Show customers in the BUILDING market segment.',
   'Who are the best customers?',
+];
+const ELECTRICITY_EXAMPLES = [
+  'How has renewable electricity generation changed in India over time?',
+  'Rank countries by renewable electricity generation for 2025, highest first.',
+  'Show renewable electricity generation for India in 2024.',
 ];
 const navTargets: Record<SectionId, string> = {
   overview: 'overview', workspace: 'query-workspace', results: 'results-explorer',
@@ -40,6 +45,7 @@ function queryOutcome(result?: QueryResponse): string {
 function QueryReceipt({ result }: { result: QueryResponse }) {
   const [copied, setCopied] = useState(false);
   const queryId = result.query_id;
+  const isLocal = result.dataset_id === 'electricity_mix';
   const copy = async () => {
     if (!queryId) return;
     try {
@@ -49,9 +55,12 @@ function QueryReceipt({ result }: { result: QueryResponse }) {
     } catch { setCopied(false); }
   };
   if (!queryId) {
+    if (isLocal && result.execution?.status === 'succeeded') {
+      return <div className="receipt unavailable"><span className="receipt-icon"><Database size={17} /></span><div><strong>Local SQLite execution · no remote query ID</strong><p>The bundled electricity CSV was queried locally. SQL, returned rows, and dataset identity are the execution evidence.</p></div></div>;
+    }
     const reason = result.clarification?.required ? 'Clarification was requested before SQL generation.'
       : result.validation?.status === 'rejected' ? 'SQL validation rejected the proposal before execution.'
-        : result.execution?.status === 'failed' ? 'Snowflake execution failed; a query ID may be unavailable.'
+        : result.execution?.status === 'failed' ? `${isLocal ? 'Local SQLite' : 'Snowflake'} execution failed; a query ID may be unavailable.`
           : result.sql ? 'This response does not include a query ID.' : 'No SQL or query ID was produced.';
     return <div className="receipt unavailable"><span className="receipt-icon"><CircleAlert size={17} /></span><div><strong>No execution receipt</strong><p>{reason}</p></div></div>;
   }
@@ -68,7 +77,7 @@ function AnswerCard({ result, question }: { result: QueryResponse; question: str
     <div className="answer-topline"><span className="eyebrow">RESPONSE FOR</span><span className="response-question">{question}</span><StatusBadge status={queryOutcome(result)} /></div>
     {clarification ? <div className="clarification-content"><h3>One detail before I query</h3><p>{result.clarification?.question || result.answer}</p>
       <div className="choice-list">{result.clarification?.options?.map((option, index) => <span className="choice-chip" key={`${option.label}-${index}`}>{option.label || 'Option unavailable'}</span>)}</div>
-      <span className="microcopy">No SQL was executed and no Snowflake query ID was created for this response. Selecting an option does not submit a new query yet; clarify in the question box and submit again.</span>
+      <span className="microcopy">No SQL was executed and no query ID was created for this response.</span>
     </div> : <><h3>{result.answer || 'No answer text was returned.'}</h3>
       {result.assumptions?.length ? <p className="answer-assumption">Interpretation: {result.assumptions.join(' · ')}</p> : null}
     </>}
@@ -102,7 +111,7 @@ function Overview({ onAsk }: { onAsk: () => void }) {
   return <section className="overview-section" id="overview">
     <div className="overview-copy"><span className="eyebrow"><Sparkles size={13} /> AI ANALYTICS INTELLIGENCE CONSOLE</span>
       <h1>Ask your data.<br /><span>Verify every answer.</span></h1>
-      <p>DataMind turns a plain-language question into a validated Snowflake query, then returns the actual rows with evidence you can inspect.</p>
+      <p>DataMind turns a plain-language question into a validated query for the selected dataset, then returns actual rows with evidence you can inspect.</p>
       <button className="button primary" onClick={onAsk}>Open query workspace <ArrowRight size={16} /></button>
     </div>
     <div className="overview-visual" aria-label="DataMind query pipeline overview">
@@ -110,12 +119,12 @@ function Overview({ onAsk }: { onAsk: () => void }) {
       <div className="visual-core"><div className="visual-core-icon"><Database size={23} /></div><strong>DataMind</strong><span>TRUST CONSOLE</span></div>
       <div className="orbit-label orbit-label-top"><span className="orbit-dot cyan" />Gemma 3 4B</div>
       <div className="orbit-label orbit-label-right"><span className="orbit-dot blue" />SQL policy</div>
-      <div className="orbit-label orbit-label-bottom"><span className="orbit-dot green" />Snowflake rows</div>
+      <div className="orbit-label orbit-label-bottom"><span className="orbit-dot green" />Selected data rows</div>
       <div className="orbit-label orbit-label-left"><span className="orbit-dot amber" />Evidence</div>
     </div>
-    <div className="scope-strip"><div><span className="scope-icon"><Database size={16} /></span><span><small>SUPPORTED DATASET</small><strong>{DATASET}</strong></span></div><span className="scope-divider" /><div><span className="scope-icon"><ShieldCheck size={16} /></span><span><small>POLICY SCOPE</small><strong>One table · four columns · 100-row maximum</strong></span></div></div>
+    <div className="scope-strip"><div><span className="scope-icon"><Database size={16} /></span><span><small>SUPPORTED DATASETS</small><strong>TPC-H CUSTOMER · OWID Electricity Mix</strong></span></div><span className="scope-divider" /><div><span className="scope-icon"><ShieldCheck size={16} /></span><span><small>POLICY SCOPE</small><strong>Dataset-specific catalogs · read-only · 100-row maximum</strong></span></div></div>
     <div className="pipeline-summary"><div className="summary-title"><span className="eyebrow">HOW IT WORKS</span><h2>From question to evidence</h2></div>
-      {[['01', 'Gemma', 'Proposes SQL locally'], ['02', 'Validator', 'Applies read-only policy'], ['03', 'Snowflake', 'Runs approved query'], ['04', 'Trust Mode', 'Checks result consistency']].map(([n, name, description], i) => <div className="summary-step" key={n}><span>{n}</span><strong>{name}</strong><small>{description}</small>{i < 3 && <ArrowRight size={14} />}</div>)}
+      {[['01', 'Planner', 'Ollama or a typed intent rule'], ['02', 'Validator', 'Applies dataset-specific policy'], ['03', 'Selected engine', 'Runs approved query'], ['04', 'Trust Mode', 'Checks result consistency']].map(([n, name, description], i) => <div className="summary-step" key={n}><span>{n}</span><strong>{name}</strong><small>{description}</small>{i < 3 && <ArrowRight size={14} />}</div>)}
     </div>
   </section>;
 }
@@ -129,12 +138,19 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [apiReady, setApiReady] = useState<boolean | null>(null);
+  const [datasetId, setDatasetId] = useState(DEFAULT_DATASET_ID);
+  const [datasets, setDatasets] = useState<DatasetMetadata[]>([]);
   const [clarificationSubmitting, setClarificationSubmitting] = useState<string | null>(null);
   const inFlight = useRef(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const reduceMotion = useReducedMotion();
 
-  useEffect(() => { void checkApiProcess().then(setApiReady); }, []);
+  useEffect(() => {
+    void checkApiProcess().then(setApiReady);
+    void getDatasetCatalog().then(catalog => setDatasets(catalog.datasets)).catch(() => setDatasets([]));
+  }, []);
+  const selectedDataset = datasets.find(dataset => dataset.id === datasetId);
+  const examples = datasetId === 'electricity_mix' ? ELECTRICITY_EXAMPLES : CUSTOMER_EXAMPLES;
 
   const navigate = (section: SectionId) => {
     setActiveSection(section);
@@ -153,7 +169,7 @@ export default function App() {
     setClarificationSubmitting(choiceLabel || null);
     setError('');
     try {
-      const response = await submitQuestion(trimmed);
+      const response = await submitQuestion(trimmed, datasetId);
       const entry: HistoryEntry = {
         id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         question: trimmed,
@@ -201,6 +217,7 @@ export default function App() {
     setResult(entry.result);
     setLastQuestion(entry.question);
     setQuestion(entry.question);
+    setDatasetId(entry.result.dataset_id || DEFAULT_DATASET_ID);
     navigate('results');
   };
 
@@ -213,20 +230,32 @@ export default function App() {
           <Overview onAsk={() => { navigate('workspace'); inputRef.current?.focus(); }} />
 
           <section className="workspace-section panel" id="query-workspace">
-            <div className="section-heading"><div><span className="eyebrow">QUERY WORKSPACE</span><h2>What would you like to know?</h2><p>Ask in everyday language. Gemma proposes SQL; policy checks decide what may run.</p></div><span className="workspace-badge"><span className="pulse-dot" />Ready for a question</span></div>
+            <div className="section-heading"><div><span className="eyebrow">QUERY WORKSPACE</span><h2>What would you like to know?</h2><p>Ask in everyday language. Ollama or a narrow typed rule proposes a plan; dataset-specific policy checks decide what may run.</p></div><span className="workspace-badge"><span className="pulse-dot" />Ready for a question</span></div>
+            <div className="dataset-picker">
+              <label htmlFor="dataset-select">Dataset</label>
+              <select id="dataset-select" value={datasetId} onChange={event => setDatasetId(event.target.value)} disabled={loading}>
+                {(datasets.length ? datasets : [
+                  { id: 'tpch_customer', name: 'TPC-H Customers', description: 'Snowflake sample customer table.', availability: 'requires_snowflake_credentials', fields: {} },
+                  { id: 'electricity_mix', name: 'Electricity Generation and Energy Mix', description: 'Offline OWID country renewable electricity generation.', availability: 'availability unavailable until API connects', fields: {} },
+                ] as DatasetMetadata[]).map(dataset => <option key={dataset.id} value={dataset.id}>{dataset.name}</option>)}
+              </select>
+              <span className="dataset-description">{selectedDataset?.description || (datasetId === 'electricity_mix' ? 'Offline OWID country renewable electricity generation.' : 'Snowflake sample customer table.')}</span>
+              {selectedDataset && <span className="dataset-fields">{Object.entries(selectedDataset.fields).map(([name, field]) => `${name}${field.unit ? ` (${field.unit})` : ''}${field.description ? `: ${field.description}` : ''}`).join(' · ')}</span>}
+              <span className="dataset-status">{selectedDataset?.availability === 'available_offline' ? 'Available offline' : selectedDataset?.availability === 'requires_snowflake_credentials' ? 'Requires Snowflake credentials and sample-data access' : selectedDataset?.availability || 'Dataset catalog unavailable'}</span>
+            </div>
             <form onSubmit={submit}>
               <label htmlFor="question-input" className="sr-only">Ask your data</label>
               <div className={`composer ${loading ? 'is-loading' : ''}`}>
                 <textarea id="question-input" ref={inputRef} value={question} onChange={event => setQuestion(event.target.value)} onKeyDown={onKeyDown}
-                  placeholder="e.g. Count customers by market segment…" rows={3} maxLength={2000} aria-describedby="composer-hint" disabled={loading} />
+                  placeholder={datasetId === 'electricity_mix' ? 'e.g. Compare renewable generation in India and China…' : 'e.g. Count customers by market segment…'} rows={3} maxLength={2000} aria-describedby="composer-hint" disabled={loading} />
                 <div className="composer-footer"><span id="composer-hint">Enter submits · Shift+Enter for a new line</span><button type="submit" className="button primary submit-button" disabled={loading || !question.trim()}>
                   {loading ? <><LoaderCircle className="spin" size={16} />Analyzing</> : <>Analyze data <ArrowRight size={16} /></>}
                 </button></div>
               </div>
             </form>
             {error && <div className="error-banner" role="alert"><CircleAlert size={16} /><span>{error}</span><button onClick={() => setError('')} aria-label="Dismiss error">×</button></div>}
-            {loading && <div className="loading-line" role="status"><span className="loading-bar" />Waiting for the local model and Snowflake response. No simulated progress is shown.</div>}
-            <div className="example-prompts"><span className="eyebrow">TRY A QUESTION</span><div>{EXAMPLES.map(example => <button key={example} className="prompt-chip" onClick={() => { setQuestion(example); setError(''); }}>{example}</button>)}</div></div>
+            {loading && <div className="loading-line" role="status"><span className="loading-bar" />Waiting for the selected planner and data source. No simulated progress is shown.</div>}
+            <div className="example-prompts"><span className="eyebrow">TRY A QUESTION</span><div>{examples.map(example => <button key={example} className="prompt-chip" onClick={() => { setQuestion(example); setError(''); }}>{example}</button>)}</div></div>
           </section>
 
           <AnimatePresence mode="wait">
@@ -257,7 +286,7 @@ export default function App() {
                       </div>;
                     })}
                   </div>
-                  <span className="microcopy">No SQL was executed and no Snowflake query ID was created for this response. Choose an option to submit a clarified question.</span>
+                  <span className="microcopy">No SQL was executed and no query ID was created for this response. Choose an option to submit a clarified question.</span>
                 </div>
                 {(result.warnings || []).map((warning, index) => <p className="response-warning" key={`${warning}-${index}`}><CircleAlert size={14} />{warning}</p>)}
               </motion.section> : <AnswerCard result={result} question={lastQuestion} />}
@@ -272,7 +301,7 @@ export default function App() {
 
           <QueryHistory entries={history} onReview={review} onClear={() => setHistory([])} />
           <Resources />
-          <footer><span>DataMind · Local-first data answers</span><span>Safety policy: one table · SELECT only · max 100 rows</span></footer>
+          <footer><span>DataMind · Local-first data answers</span><span>Dataset-specific read-only catalogs · max 100 rows</span></footer>
         </motion.div>
       </main>
     </div>

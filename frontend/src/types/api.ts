@@ -9,6 +9,8 @@ export interface EvidenceCheck {
 export interface StageEvidence {
   status?: CheckStatus;
   checks?: EvidenceCheck[];
+  engine?: string;
+  dataset_id?: string;
 }
 
 export interface ClarificationOption {
@@ -19,6 +21,8 @@ export interface ClarificationOption {
 
 export interface QueryResponse {
   answer: string;
+  dataset_id?: string;
+  plan_source?: string;
   sql?: string | null;
   sql_parameters?: unknown[];
   query_plan?: Record<string, unknown> | null;
@@ -42,6 +46,33 @@ export interface QueryResponse {
 
 export interface QueryRequest {
   question: string;
+  dataset_id?: string;
+}
+
+export interface DatasetField {
+  type: string;
+  unit?: string;
+  description?: string;
+}
+
+export interface DatasetMetadata {
+  id: string;
+  name: string;
+  description: string;
+  availability: string;
+  fields: Record<string, DatasetField>;
+  units?: Record<string, string>;
+  license?: string;
+  attribution?: string;
+  source_url?: string;
+  documentation_url?: string;
+  repository_url?: string;
+  default?: boolean;
+}
+
+export interface DatasetCatalogResponse {
+  default_dataset_id: string;
+  datasets: DatasetMetadata[];
 }
 
 export interface HistoryEntry {

@@ -21,6 +21,7 @@ export function SqlPanel({ result }: { result: QueryResponse }) {
   const [copied, setCopied] = useState(false);
   const sql = result.sql;
   const rejected = result.validation?.status === 'rejected';
+  const engine = result.execution?.engine === 'local dataset' ? 'local SQLite' : 'Snowflake';
   const copy = async () => {
     if (!sql || !navigator.clipboard) return;
     try {
@@ -38,11 +39,11 @@ export function SqlPanel({ result }: { result: QueryResponse }) {
       </div>
     </div>
     {!sql ? <p className="muted">No SQL was generated for this response.</p> : <>
-      <p className={`sql-label ${rejected ? 'text-amber' : ''}`}>{rejected ? 'Model proposal · rejected before execution' : result.validation?.status === 'passed' ? 'Validated SQL · submitted to Snowflake' : 'SQL proposal · execution not established'}</p>
+      <p className={`sql-label ${rejected ? 'text-amber' : ''}`}>{rejected ? 'Query proposal · rejected before execution' : result.validation?.status === 'passed' ? `Validated SQL · submitted to ${engine}` : 'SQL proposal · execution not established'}</p>
       {expanded && <div className="sql-code-wrap"><pre className="line-numbers" aria-hidden="true">{sql.split('\n').map((_, i) => `${i + 1}`).join('\n')}</pre><pre className="sql-code"><code>{highlightSql(sql)}</code></pre></div>}
       <div className="sql-footer"><span>{result.execution?.status === 'succeeded' ? 'Execution succeeded' : rejected ? 'Not executed' : 'Execution status shown in Trust Mode'}</span><button className="text-button" onClick={copy} disabled={!expanded}>{copied ? <Check size={14} /> : <Copy size={14} />}{copied ? 'Copied' : 'Copy SQL'}</button></div>
       {result.sql_parameters?.length ? <div className="sql-parameters"><span className="eyebrow">BOUND FILTER VALUES</span><div>{result.sql_parameters.map((value, index) => <code key={index}>?{index + 1} = {value == null ? 'NULL' : String(value)}</code>)}</div></div> : null}
-      <p className="microcopy">One approved table · four allowlisted columns · maximum 100 returned rows</p>
+      <p className="microcopy">Dataset-specific allowlist · maximum 100 returned rows</p>
     </>}
   </section>;
 }

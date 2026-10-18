@@ -1,11 +1,15 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
-import { checkApiProcess, submitQuestion } from './lib/api';
+import { checkApiProcess, getDatasetCatalog, submitQuestion } from './lib/api';
 import type { QueryResponse } from './types/api';
 
 vi.mock('./lib/api', () => ({
   checkApiProcess: vi.fn().mockResolvedValue(false),
+  getDatasetCatalog: vi.fn().mockResolvedValue({ default_dataset_id: 'tpch_customer', datasets: [
+    { id: 'tpch_customer', name: 'TPC-H Customers', description: 'Snowflake sample customer table.', availability: 'requires_snowflake_credentials', fields: { C_CUSTKEY: { type: 'integer' } }, default: true },
+    { id: 'electricity_mix', name: 'Electricity Generation and Energy Mix', description: 'OWID renewable generation.', availability: 'available_offline', fields: { RENEWABLES_TWH: { type: 'number', unit: 'TWh' } } },
+  ] }),
   submitQuestion: vi.fn(),
 }));
 
@@ -48,6 +52,10 @@ describe('Trust Console', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(checkApiProcess).mockResolvedValue(false);
+    vi.mocked(getDatasetCatalog).mockResolvedValue({ default_dataset_id: 'tpch_customer', datasets: [
+      { id: 'tpch_customer', name: 'TPC-H Customers', description: 'Snowflake sample customer table.', availability: 'requires_snowflake_credentials', fields: { C_CUSTKEY: { type: 'integer' } }, default: true },
+      { id: 'electricity_mix', name: 'Electricity Generation and Energy Mix', description: 'OWID renewable generation.', availability: 'available_offline', fields: { RENEWABLES_TWH: { type: 'number', unit: 'TWh' } } },
+    ] });
   });
 
   it('shows actual answer, returned rows, SQL, query ID and evidence', async () => {
@@ -63,7 +71,7 @@ describe('Trust Console', () => {
     expect(screen.getByText('plan_schema')).toBeInTheDocument();
     expect(screen.getByText('Inspect typed query plan')).toBeInTheDocument();
     expect(screen.getByText('?1 = BUILDING')).toBeInTheDocument();
-    expect(submitQuestion).toHaveBeenCalledWith('top balance');
+    expect(submitQuestion).toHaveBeenCalledWith('top balance', 'tpch_customer');
   });
 
   it('shows clarification without implying SQL or execution', async () => {
@@ -95,8 +103,8 @@ describe('Trust Console', () => {
 
     expect(screen.getByRole('textbox', { name: 'Ask your data' })).toHaveValue(clarifiedQuestion);
     await waitFor(() => expect(submitQuestion).toHaveBeenCalledTimes(2));
-    expect(submitQuestion).toHaveBeenNthCalledWith(1, 'Who are the best customers?');
-    expect(submitQuestion).toHaveBeenNthCalledWith(2, clarifiedQuestion);
+    expect(submitQuestion).toHaveBeenNthCalledWith(1, 'Who are the best customers?', 'tpch_customer');
+    expect(submitQuestion).toHaveBeenNthCalledWith(2, clarifiedQuestion, 'tpch_customer');
     expect(await screen.findByText(`API result for ${label}.`)).toBeInTheDocument();
     expect(screen.getAllByText(`query-${label}`).length).toBeGreaterThan(0);
     expect(screen.getAllByText('Succeeded').length).toBeGreaterThan(0);
@@ -153,8 +161,8 @@ describe('Trust Console', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Highest account balance' }));
     expect(await screen.findByText('Retry returned the real API answer.')).toBeInTheDocument();
-    expect(submitQuestion).toHaveBeenNthCalledWith(2, clarifiedQuestion);
-    expect(submitQuestion).toHaveBeenNthCalledWith(3, clarifiedQuestion);
+    expect(submitQuestion).toHaveBeenNthCalledWith(2, clarifiedQuestion, 'tpch_customer');
+    expect(submitQuestion).toHaveBeenNthCalledWith(3, clarifiedQuestion, 'tpch_customer');
   });
 
   it('keeps a prior successful result visible when a later request fails', async () => {
@@ -196,5 +204,26 @@ describe('Trust Console', () => {
     fireEvent.click(screen.getByRole('button', { name: /top balance/i }));
     await waitFor(() => expect(submitQuestion).toHaveBeenCalledTimes(1));
     expect(screen.getAllByText('query-123').length).toBeGreaterThan(0);
+  });
+
+  it('sends the selected electricity dataset and displays local execution evidence', async () => {
+    vi.mocked(submitQuestion).mockResolvedValue({
+      answer: 'local dataset returned 1 row: ENTITY=India, YEAR=2024, RENEWABLES_TWH=403.39.',
+      dataset_id: 'electricity_mix', plan_source: 'ollama', sql: 'SELECT ENTITY, YEAR, RENEWABLES_TWH FROM electricity_mix LIMIT 1',
+      columns: ['ENTITY', 'YEAR', 'RENEWABLES_TWH'], rows: [['India', 2024, 403.39]], row_count: 1,
+      query_id: null, assumptions: [], warnings: [], outcome: 'success',
+      validation: { status: 'passed', checks: [] }, execution: { status: 'succeeded', engine: 'local dataset' },
+      verification: { status: 'passed', checks: [] },
+    });
+    render(<App />);
+    fireEvent.change(screen.getByLabelText('Dataset'), { target: { value: 'electricity_mix' } });
+    fireEvent.change(screen.getByRole('textbox', { name: 'Ask your data' }), { target: { value: 'renewables India 2024' } });
+    fireEvent.click(screen.getByRole('button', { name: /Analyze data/i }));
+
+    expect(await screen.findByText(/local dataset returned 1 row/)).toBeInTheDocument();
+    expect(submitQuestion).toHaveBeenCalledWith('renewables India 2024', 'electricity_mix');
+    expect(screen.getByText(/Local SQLite execution · no remote query ID/)).toBeInTheDocument();
+    expect(screen.getByText(/Plan source: ollama/)).toBeInTheDocument();
+    expect(screen.getByText('403.39')).toBeInTheDocument();
   });
 });

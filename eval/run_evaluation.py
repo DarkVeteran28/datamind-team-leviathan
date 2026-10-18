@@ -6,8 +6,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 from datamind import pipeline
+from datamind.dataset_registry import DEFAULT_DATASET_ID
 
-FIELDS = {"answer", "sql", "columns", "rows", "query_id", "assumptions", "warnings", "row_count",
+FIELDS = {"answer", "dataset_id", "plan_source", "sql", "columns", "rows", "query_id", "assumptions", "warnings", "row_count",
           "validation", "execution", "verification", "clarification", "sql_parameters",
           "query_plan", "plan_validation", "outcome"}
 
@@ -16,7 +17,7 @@ def run_case(case):
     expected = case["expected"]
     calls = {"model": 0, "db": 0}
 
-    def generate(_question):
+    def generate(_question, dataset_id=DEFAULT_DATASET_ID):
         calls["model"] += 1
         if "llm_error" in case:
             raise RuntimeError(case["llm_error"])
@@ -30,16 +31,21 @@ def run_case(case):
 
     original_generate = pipeline.llm.generate_plan
     original_execute = pipeline.snowflake_client.execute_sql
+    original_local_execute = pipeline.electricity_client.execute_sql
     original_answer = pipeline._answer
     pipeline.llm.generate_plan = generate
-    pipeline.snowflake_client.execute_sql = execute
+    if case.get("dataset_id", DEFAULT_DATASET_ID) == "electricity_mix":
+        pipeline.electricity_client.execute_sql = execute
+    else:
+        pipeline.snowflake_client.execute_sql = execute
     if "answer_override" in case:
-        pipeline._answer = lambda _columns, _rows: case["answer_override"]
+        pipeline._answer = lambda _columns, _rows, _source="Snowflake": case["answer_override"]
     try:
-        result = pipeline.ask(case["question"])
+        result = pipeline.ask(case["question"], case.get("dataset_id", DEFAULT_DATASET_ID))
     finally:
         pipeline.llm.generate_plan = original_generate
         pipeline.snowflake_client.execute_sql = original_execute
+        pipeline.electricity_client.execute_sql = original_local_execute
         pipeline._answer = original_answer
 
     failures = []
@@ -47,6 +53,15 @@ def run_case(case):
         failures.append(f"response fields differ: {sorted(result)}")
     if result.get("row_count") != expected["row_count"]:
         failures.append(f"row_count={result.get('row_count')}, expected {expected['row_count']}")
+    expected_dataset = case.get("dataset_id", DEFAULT_DATASET_ID)
+    if result.get("dataset_id") != expected_dataset:
+        failures.append(f"dataset_id={result.get('dataset_id')!r}, expected {expected_dataset!r}")
+    if "plan_source" in expected and result.get("plan_source") != expected["plan_source"]:
+        failures.append(f"plan_source={result.get('plan_source')!r}, expected {expected['plan_source']!r}")
+    if "columns" in expected and result.get("columns") != expected["columns"]:
+        failures.append(f"columns={result.get('columns')!r}, expected {expected['columns']!r}")
+    if "rows" in expected and result.get("rows") != expected["rows"]:
+        failures.append(f"rows={result.get('rows')!r}, expected {expected['rows']!r}")
     for fragment in expected.get("answer_contains", []):
         if fragment.casefold() not in result.get("answer", "").casefold():
             failures.append(f"answer missing {fragment!r}")
@@ -94,18 +109,27 @@ def run_case(case):
 
 def main():
     cases = json.loads((ROOT / "eval" / "cases.json").read_text())
-    failed = 0
-    print("Evaluation mode: offline mocked Ollama and Snowflake; not a live accuracy benchmark.")
+    failures_by_dataset = {"tpch_customer": 0, "electricity_mix": 0}
+    counts = {"tpch_customer": 0, "electricity_mix": 0}
+    print("Evaluation mode: offline mocked model and execution calls; not a live accuracy benchmark.")
+    print("TPC-H result rows are fixtures; electricity expected rows are independently derived from the bundled CSV, while the evaluator's model/executor boundaries are mocked.")
     for case in cases:
+        dataset_id = case.get("dataset_id", DEFAULT_DATASET_ID)
+        counts.setdefault(dataset_id, 0)
+        failures_by_dataset.setdefault(dataset_id, 0)
+        counts[dataset_id] += 1
         errors = run_case(case)
         if errors:
-            failed += 1
+            failures_by_dataset[dataset_id] += 1
             print(f"FAIL {case['name']}: " + "; ".join(errors))
         else:
             print(f"PASS {case['name']}")
-    passed = len(cases) - failed
-    print(f"Total cases: {len(cases)} | Passed: {passed} | Failed: {failed} | Status: {'PASS' if failed == 0 else 'FAIL'}")
-    return 1 if failed else 0
+    total_failed = sum(failures_by_dataset.values())
+    total_passed = len(cases) - total_failed
+    for dataset_id in counts:
+        print(f"{dataset_id}: {counts[dataset_id] - failures_by_dataset[dataset_id]}/{counts[dataset_id]} passed | {failures_by_dataset[dataset_id]} failed")
+    print(f"Total cases: {len(cases)} | Passed: {total_passed} | Failed: {total_failed} | Status: {'PASS' if total_failed == 0 else 'FAIL'}")
+    return 1 if total_failed else 0
 
 
 if __name__ == "__main__":

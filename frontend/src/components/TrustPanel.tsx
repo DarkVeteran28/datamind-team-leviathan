@@ -5,7 +5,7 @@ import { StatusBadge } from './StatusBadge';
 
 const caveats = {
   validation: 'Passing means the query met implemented policy checks. It does not establish that the SQL answers the user’s intent.',
-  execution: 'A successful execution means Snowflake ran the query. It does not validate the interpretation.',
+  execution: 'A successful execution means the selected engine returned results. It does not validate the interpretation.',
   verification: 'This engine checks result consistency, not semantic correctness or natural-language accuracy.',
 };
 
@@ -30,12 +30,19 @@ function EvidenceStage({ title, evidence, caveat, unavailable = false }: {
 export function TrustPanel({ result, question }: { result: QueryResponse; question: string }) {
   const reduceMotion = useReducedMotion();
   const clarification = result.clarification?.required;
+  const planTitle = result.plan_source === 'ollama' ? 'Gemma query-plan generation'
+    : result.plan_source === 'deterministic_rule' ? 'Deterministic intent mapping' : 'Query-plan generation';
+  const planStatus = result.plan_source === 'ollama' || result.plan_source === 'deterministic_rule'
+    ? 'passed' : 'not_run';
+  const executionTitle = result.dataset_id === 'electricity_mix' ? 'Local SQLite execution' : 'Snowflake execution';
+  const engineTitle = result.execution?.engine === 'local dataset' ? 'Local SQLite execution'
+    : result.execution?.engine === 'Snowflake' ? 'Snowflake execution' : 'Selected dataset execution';
   const steps = [
     { number: '01', title: 'Question received', status: question ? 'passed' : 'not_available' },
-    { number: '02', title: 'Gemma query-plan generation', status: 'not_available' },
+    { number: '02', title: planTitle, status: planStatus },
     { number: '03', title: 'Typed plan validation', status: result.plan_validation?.status || 'not_available' },
     { number: '04', title: 'SQL policy validation', status: result.validation?.status || 'not_available' },
-    { number: '05', title: 'Snowflake execution', status: result.execution?.status || 'not_available' },
+    { number: '05', title: engineTitle, status: result.execution?.status || 'not_available' },
     { number: '06', title: 'Result consistency', status: result.verification?.status || 'not_available' },
   ];
   return <section className="panel trust-panel" id="trust-mode">
@@ -49,14 +56,14 @@ export function TrustPanel({ result, question }: { result: QueryResponse; questi
         {index < steps.length - 1 && <span className="step-connector" />}
       </motion.div>)}
     </div>
-    <p className="microcopy">Generation status is unavailable because the backend does not return a separate model-generation evidence field.</p>
+    <p className="microcopy">Plan source: {result.plan_source || 'not run'}. Dataset: {result.dataset_id || 'tpch_customer'}.</p>
     <div className="evidence-grid">
       <EvidenceStage title="Typed query-plan validation" evidence={result.plan_validation} caveat="Passing means the plan used supported fields, operations, typed filters, and a bounded result limit." />
       <EvidenceStage title="SQL policy validation" evidence={result.validation} caveat={caveats.validation} />
-      <EvidenceStage title="Snowflake execution" evidence={result.execution} caveat={caveats.execution} />
+      <EvidenceStage title={executionTitle} evidence={result.execution} caveat={caveats.execution} />
       <EvidenceStage title="Result consistency verification" evidence={result.verification} caveat={caveats.verification} />
     </div>
     {result.query_plan && <details className="plan-inspection"><summary>Inspect typed query plan</summary><pre>{JSON.stringify(result.query_plan, null, 2)}</pre></details>}
-    <div className="trust-footnote"><Check size={15} /><span>Result consistency is not a semantic accuracy benchmark. Review the SQL, assumptions, returned rows, and query ID.</span></div>
+    <div className="trust-footnote"><Check size={15} /><span>Result consistency is not a semantic accuracy benchmark. Review the dataset, SQL, assumptions, returned rows, and Snowflake query ID when present.</span></div>
   </section>;
 }

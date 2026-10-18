@@ -50,11 +50,12 @@ export function ResultsExplorer({ result }: { result: QueryResponse }) {
     ? rows.filter(row => row.some(value => String(value ?? '').toLowerCase().includes(filter.toLowerCase())))
     : rows, [filter, rows]);
   const chart = chartRows(result);
+  const sourceName = result.dataset_id === 'electricity_mix' ? 'LOCAL SQLITE' : 'SNOWFLAKE';
   const csv = exportCsv(columns, rows);
   const csvUrl = `data:text/csv;charset=utf-8,${encodeURIComponent(csv)}`;
 
   return <section className="panel results-panel" id="results-explorer">
-    <div className="panel-heading"><div><span className="eyebrow">SNOWFLAKE RESULT SET</span><h2>Results explorer</h2></div>
+    <div className="panel-heading"><div><span className="eyebrow">{sourceName} RESULT SET</span><h2>Results explorer</h2></div>
       <div className="results-actions"><span className="rows-pill"><Table2 size={14} />{result.row_count ?? rows.length} rows</span>
         {columns.length > 0 && rows.length > 0 && <a className="button secondary compact" href={csvUrl} download="datamind-results.csv"><Download size={15} />Export CSV</a>}
       </div>
@@ -70,7 +71,7 @@ export function ResultsExplorer({ result }: { result: QueryResponse }) {
           <CartesianGrid stroke="#1e3047" vertical={false} /><XAxis dataKey="segment" stroke="#91a2b8" tickLine={false} axisLine={false} /><YAxis stroke="#91a2b8" tickLine={false} axisLine={false} allowDecimals={false} /><Tooltip contentStyle={{ background: '#101a2b', border: '1px solid #29435c', borderRadius: 8, color: '#e9f3fb' }} /><Bar dataKey="count" fill="#56c7d0" radius={[4, 4, 0, 0]} animationDuration={350} />
         </BarChart></ResponsiveContainer></div>
       </div>}
-    </> : result.execution?.status === 'succeeded' ? <div className="empty-state"><div className="empty-icon"><Table2 /></div><strong>Query completed with no rows</strong><p>Snowflake returned an empty result set. No example rows are substituted.</p></div>
-      : <div className="empty-state"><div className="empty-icon"><Table2 /></div><strong>No result set available</strong><p>Rows appear here only when the backend returns actual Snowflake results.</p></div>}
+    </> : result.execution?.status === 'succeeded' ? <div className="empty-state"><div className="empty-icon"><Table2 /></div><strong>Query completed with no rows</strong><p>{sourceName} returned an empty result set. No example rows are substituted.</p></div>
+      : <div className="empty-state"><div className="empty-icon"><Table2 /></div><strong>No result set available</strong><p>Rows appear here only when the selected backend returns actual results.</p></div>}
   </section>;
 }

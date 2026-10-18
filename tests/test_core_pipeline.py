@@ -14,7 +14,7 @@ from datamind.semantic_query import QueryPlan
 from datamind.validator import validate_sql, validate_sql_with_evidence
 
 
-FIELDS = {"answer", "sql", "columns", "rows", "query_id", "assumptions", "warnings", "row_count",
+FIELDS = {"answer", "dataset_id", "plan_source", "sql", "columns", "rows", "query_id", "assumptions", "warnings", "row_count",
           "validation", "execution", "verification", "clarification", "sql_parameters",
           "query_plan", "plan_validation", "outcome"}
 
@@ -129,6 +129,27 @@ def test_validation_evidence_reports_actual_limit_cap():
     }
 
 
+def test_validator_allows_and_only_for_safe_where_filter_comparisons():
+    sql, evidence = validate_sql_with_evidence(
+        "SELECT C_CUSTKEY FROM CUSTOMER WHERE C_MKTSEGMENT = 'BUILDING' AND C_ACCTBAL > 0 LIMIT 5"
+    )
+
+    assert "AND" in sql
+    assert _check(evidence, "logical_operators")["status"] == "passed"
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT C_CUSTKEY AND C_ACCTBAL FROM CUSTOMER LIMIT 5",
+    "SELECT C_CUSTKEY FROM CUSTOMER WHERE C_CUSTKEY = 1 OR C_CUSTKEY = 2 LIMIT 5",
+    "SELECT C_CUSTKEY FROM CUSTOMER WHERE NOT C_CUSTKEY = 1 LIMIT 5",
+    "SELECT C_CUSTKEY FROM CUSTOMER WHERE C_CUSTKEY = 1 AND C_NAME LIKE 'A%' LIMIT 5",
+    "SELECT C_CUSTKEY FROM CUSTOMER HAVING C_CUSTKEY = 1 AND C_ACCTBAL > 0 LIMIT 5",
+])
+def test_validator_rejects_logical_operators_outside_safe_where_conjunctions(sql):
+    with pytest.raises(ValueError):
+        validate_sql(sql)
+
+
 @pytest.mark.parametrize("sql", [
     "DELETE FROM CUSTOMER",
     "SELECT * FROM CUSTOMER",
@@ -137,6 +158,7 @@ def test_validation_evidence_reports_actual_limit_cap():
     "SELECT C_CUSTKEY FROM CUSTOMER; DROP TABLE CUSTOMER",
     "SELECT C_CUSTKEY FROM CUSTOMER JOIN ORDERS ON 1=1",
     "SELECT C_CUSTKEY FROM CUSTOMER WHERE RANDOM() > 0",
+    "SELECT C_CUSTKEY FROM CUSTOMER WHERE CURRENT_USER() = 'x'",
     "SELECT C_CUSTKEY FROM CUSTOMER LIMIT 0",
     "SELECT C_CUSTKEY FROM CUSTOMER LIMIT -1",
     "SELECT C_CUSTKEY FROM CUSTOMER WHERE C_CUSTKEY IN (SELECT C_CUSTKEY FROM CUSTOMER)",

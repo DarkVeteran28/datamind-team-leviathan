@@ -11,10 +11,12 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, constr
 
 from .pipeline import ask
+from .dataset_registry import DEFAULT_DATASET_ID, list_datasets
 
 
 class QueryRequest(BaseModel):
     question: constr(strip_whitespace=True, min_length=1, max_length=2000)
+    dataset_id: str = DEFAULT_DATASET_ID
 
 
 class StageEvidence(BaseModel):
@@ -30,6 +32,8 @@ class Clarification(BaseModel):
 
 class QueryResponse(BaseModel):
     answer: str
+    dataset_id: str = DEFAULT_DATASET_ID
+    plan_source: str = "not_run"
     sql: Optional[str] = None
     sql_parameters: List[Any] = Field(default_factory=list)
     query_plan: Optional[Dict[str, Any]] = None
@@ -122,11 +126,18 @@ def health():
     return {"status": "ready", "ollama": "not_checked", "snowflake": "not_checked"}
 
 
+@app.get("/api/datasets")
+def datasets():
+    """Return the supported dataset catalog and runtime-independent availability."""
+    return {"default_dataset_id": DEFAULT_DATASET_ID, "datasets": list_datasets()}
+
+
 @app.post("/api/query", response_model=QueryResponse)
 def query(request: QueryRequest):
     """Call the existing synchronous pipeline in FastAPI's worker pool."""
     try:
-        result = ask(request.question)
+        result = (ask(request.question) if request.dataset_id == DEFAULT_DATASET_ID
+                  else ask(request.question, dataset_id=request.dataset_id))
         return _json_safe(_redact_configured_secrets(result))
     except Exception:
         return JSONResponse(

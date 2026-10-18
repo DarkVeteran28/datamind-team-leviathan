@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ApiError, checkApiProcess, submitQuestion } from './api';
+import { ApiError, checkApiProcess, getDatasetCatalog, submitQuestion } from './api';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -11,7 +11,22 @@ describe('DataMind API client', () => {
 
     await expect(submitQuestion('  show two  ')).resolves.toEqual(result);
     expect(fetchMock.mock.calls[0][0]).toContain('/api/query');
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ question: 'show two' });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ question: 'show two', dataset_id: 'tpch_customer' });
+  });
+
+  it('includes the selected dataset when submitting a query', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ answer: 'local result' }) });
+    vi.stubGlobal('fetch', fetchMock);
+    await submitQuestion('renewables India', 'electricity_mix');
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ question: 'renewables India', dataset_id: 'electricity_mix' });
+  });
+
+  it('loads the supported dataset registry', async () => {
+    const catalog = { default_dataset_id: 'tpch_customer', datasets: [{ id: 'tpch_customer' }, { id: 'electricity_mix' }] };
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => catalog });
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(getDatasetCatalog()).resolves.toEqual(catalog);
+    expect(fetchMock.mock.calls[0][0]).toContain('/api/datasets');
   });
 
   it('uses a safe backend error message and refuses blank input', async () => {

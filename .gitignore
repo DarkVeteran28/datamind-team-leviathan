@@ -4,9 +4,10 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .DS_Store
-data/
+data/*
 *.parquet
 *.csv
+!data/electricity_mix.csv
 frontend/node_modules/
 frontend/dist/
 frontend/*.tsbuildinfo

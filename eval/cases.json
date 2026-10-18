@@ -548,5 +548,418 @@
       "verification_status": "not_run",
       "clarification_required": false
     }
+  },
+  {
+    "name": "OWID country-year observation count",
+    "dataset_id": "electricity_mix",
+    "question": "How many annual country observations are in the bundled sample?",
+    "expected_source": "Independently calculated from data/electricity_mix.csv with Python csv and explicit filtering/sorting.",
+    "columns": [
+      "ROW_COUNT"
+    ],
+    "rows": [
+      [
+        5387
+      ]
+    ],
+    "query_id": null,
+    "model_plan": {
+      "version": 1,
+      "status": "query",
+      "assumptions": [],
+      "dimensions": [],
+      "metrics": [
+        {
+          "operation": "count"
+        }
+      ],
+      "filters": [],
+      "sort": [],
+      "limit": null
+    },
+    "expected": {
+      "outcome": "success",
+      "row_count": 1,
+      "columns": [
+        "ROW_COUNT"
+      ],
+      "rows": [
+        [
+          5387
+        ]
+      ],
+      "answer_contains": [
+        "local dataset returned"
+      ],
+      "sql_contains": [
+        "COUNT(*)",
+        "LIMIT 100"
+      ],
+      "model_calls": 1,
+      "db_calls": 1,
+      "validation_status": "passed",
+      "execution_status": "succeeded",
+      "verification_status": "passed",
+      "query_id": null
+    }
+  },
+  {
+    "name": "India renewable generation in 2024",
+    "dataset_id": "electricity_mix",
+    "question": "What was renewable electricity generation in India in 2024?",
+    "expected_source": "Independently calculated from data/electricity_mix.csv with Python csv and explicit filtering/sorting.",
+    "columns": [
+      "RENEWABLES_TWH_SUM"
+    ],
+    "rows": [
+      [
+        403.39
+      ]
+    ],
+    "query_id": null,
+    "model_plan": {
+      "version": 1,
+      "status": "query",
+      "assumptions": [],
+      "dimensions": [],
+      "metrics": [
+        {
+          "operation": "sum",
+          "field": "RENEWABLES_TWH"
+        }
+      ],
+      "filters": [
+        {
+          "field": "ENTITY",
+          "operator": "eq",
+          "value": "India"
+        },
+        {
+          "field": "YEAR",
+          "operator": "eq",
+          "value": 2024
+        }
+      ],
+      "sort": [],
+      "limit": 1
+    },
+    "expected": {
+      "outcome": "success",
+      "row_count": 1,
+      "columns": [
+        "RENEWABLES_TWH_SUM"
+      ],
+      "rows": [
+        [
+          403.39
+        ]
+      ],
+      "answer_contains": [
+        "local dataset returned"
+      ],
+      "sql_contains": [
+        "AND",
+        "?"
+      ],
+      "model_calls": 1,
+      "db_calls": 1,
+      "validation_status": "passed",
+      "execution_status": "succeeded",
+      "verification_status": "passed",
+      "query_id": null
+    }
+  },
+  {
+    "name": "India recent-year grouped trend",
+    "dataset_id": "electricity_mix",
+    "question": "How did renewable generation change in India from 2023 through 2025?",
+    "expected_source": "Independently calculated from data/electricity_mix.csv with Python csv and explicit filtering/sorting.",
+    "columns": [
+      "YEAR",
+      "RENEWABLES_TWH_SUM"
+    ],
+    "rows": [
+      [
+        2023,
+        369.97
+      ],
+      [
+        2024,
+        403.39
+      ],
+      [
+        2025,
+        500.98
+      ]
+    ],
+    "query_id": null,
+    "model_plan": {
+      "version": 1,
+      "status": "query",
+      "assumptions": [],
+      "dimensions": [
+        "YEAR"
+      ],
+      "metrics": [
+        {
+          "operation": "sum",
+          "field": "RENEWABLES_TWH"
+        }
+      ],
+      "filters": [
+        {
+          "field": "ENTITY",
+          "operator": "eq",
+          "value": "India"
+        },
+        {
+          "field": "YEAR",
+          "operator": "gte",
+          "value": 2023
+        },
+        {
+          "field": "YEAR",
+          "operator": "lte",
+          "value": 2025
+        }
+      ],
+      "sort": [
+        {
+          "field": "YEAR",
+          "direction": "ASC"
+        }
+      ],
+      "limit": 100
+    },
+    "expected": {
+      "outcome": "success",
+      "row_count": 3,
+      "columns": [
+        "YEAR",
+        "RENEWABLES_TWH_SUM"
+      ],
+      "rows": [
+        [
+          2023,
+          369.97
+        ],
+        [
+          2024,
+          403.39
+        ],
+        [
+          2025,
+          500.98
+        ]
+      ],
+      "answer_contains": [
+        "local dataset returned"
+      ],
+      "sql_contains": [
+        "GROUP BY YEAR",
+        "ORDER BY YEAR ASC"
+      ],
+      "model_calls": 1,
+      "db_calls": 1,
+      "validation_status": "passed",
+      "execution_status": "succeeded",
+      "verification_status": "passed",
+      "query_id": null
+    }
+  },
+  {
+    "name": "Latest-year renewable generation ranking",
+    "dataset_id": "electricity_mix",
+    "question": "Rank top 3 countries by renewable electricity generation for 2025, highest first.",
+    "expected_source": "Independently calculated from data/electricity_mix.csv with Python csv and explicit filtering/sorting.",
+    "columns": [
+      "ENTITY",
+      "RENEWABLES_TWH"
+    ],
+    "rows": [
+      [
+        "China",
+        3920.47
+      ],
+      [
+        "United States",
+        1158.8
+      ],
+      [
+        "Brazil",
+        649.97
+      ]
+    ],
+    "query_id": null,
+    "model_plan": {
+      "version": 1,
+      "status": "query",
+      "assumptions": [],
+      "dimensions": [
+        "ENTITY",
+        "RENEWABLES_TWH"
+      ],
+      "metrics": [],
+      "filters": [
+        {
+          "field": "YEAR",
+          "operator": "eq",
+          "value": 2025
+        }
+      ],
+      "sort": [
+        {
+          "field": "RENEWABLES_TWH",
+          "direction": "DESC"
+        }
+      ],
+      "limit": 3
+    },
+    "expected": {
+      "outcome": "success",
+      "row_count": 3,
+      "columns": [
+        "ENTITY",
+        "RENEWABLES_TWH"
+      ],
+      "rows": [
+        [
+          "China",
+          3920.47
+        ],
+        [
+          "United States",
+          1158.8
+        ],
+        [
+          "Brazil",
+          649.97
+        ]
+      ],
+      "answer_contains": [
+        "local dataset returned"
+      ],
+      "sql_contains": [
+        "ORDER BY RENEWABLES_TWH DESC",
+        "LIMIT 3"
+      ],
+      "model_calls": 0,
+      "db_calls": 1,
+      "validation_status": "passed",
+      "execution_status": "succeeded",
+      "verification_status": "passed",
+      "query_id": null,
+      "plan_source": "deterministic_rule"
+    }
+  },
+  {
+    "name": "OWID absent entity yields empty result",
+    "dataset_id": "electricity_mix",
+    "question": "Show renewable generation for Atlantis",
+    "expected_source": "Independent check that no bundled CSV row has the filtered entity value.",
+    "columns": [
+      "ENTITY"
+    ],
+    "rows": [],
+    "query_id": null,
+    "model_plan": {
+      "version": 1,
+      "status": "query",
+      "assumptions": [],
+      "dimensions": [
+        "ENTITY"
+      ],
+      "metrics": [],
+      "filters": [
+        {
+          "field": "ENTITY",
+          "operator": "eq",
+          "value": "Atlantis"
+        }
+      ],
+      "sort": [],
+      "limit": 10
+    },
+    "expected": {
+      "outcome": "success",
+      "row_count": 0,
+      "columns": [
+        "ENTITY"
+      ],
+      "rows": [],
+      "answer_contains": [
+        "returned no rows"
+      ],
+      "sql_contains": [
+        "ENTITY = ?"
+      ],
+      "model_calls": 1,
+      "db_calls": 1,
+      "validation_status": "passed",
+      "execution_status": "succeeded",
+      "verification_status": "passed",
+      "query_id": null
+    }
+  },
+  {
+    "name": "OWID unavailable solar breakdown is unsupported",
+    "dataset_id": "electricity_mix",
+    "question": "Show solar generation by country in 2025",
+    "model_plan": {
+      "version": 1,
+      "status": "unsupported",
+      "assumptions": [],
+      "message": "Individual renewable source breakdown is not in this dataset.",
+      "dimensions": [],
+      "metrics": [],
+      "filters": [],
+      "sort": [],
+      "limit": null
+    },
+    "expected": {
+      "outcome": "unsupported",
+      "row_count": 0,
+      "answer_contains": [
+        "outside the supported"
+      ],
+      "model_calls": 1,
+      "db_calls": 0,
+      "validation_status": "not_run",
+      "execution_status": "not_run",
+      "verification_status": "not_run",
+      "plan_validation_status": "passed",
+      "query_id": null
+    }
+  },
+  {
+    "name": "OWID malformed typed plan is rejected",
+    "dataset_id": "electricity_mix",
+    "question": "Count electricity records",
+    "model_plan": {
+      "version": 1,
+      "status": "query",
+      "dimensions": [
+        "SOLAR_TWH"
+      ],
+      "metrics": [],
+      "filters": [],
+      "sort": [],
+      "limit": 5,
+      "assumptions": []
+    },
+    "expected": {
+      "outcome": "rejected",
+      "row_count": 0,
+      "answer_contains": [
+        "rejected before SQL compilation"
+      ],
+      "model_calls": 1,
+      "db_calls": 0,
+      "validation_status": "not_run",
+      "execution_status": "not_run",
+      "verification_status": "not_run",
+      "plan_validation_status": "rejected",
+      "query_id": null
+    }
   }
 ]
