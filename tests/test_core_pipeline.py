@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from datamind import llm, pipeline, snowflake_client
+from datamind.semantic_query import QueryPlan
 from datamind.validator import validate_sql, validate_sql_with_evidence
 
 
@@ -66,6 +67,45 @@ def test_clear_account_balance_ranking_is_not_clarified(monkeypatch):
     result = pipeline.ask("Show me the best customers by account balance")
     assert result["clarification"]["required"] is False
     assert result["query_id"] == "qid-clear-ranking"
+
+
+def test_exact_top_five_balance_question_compiles_and_executes_validated_plan(monkeypatch):
+    question = "Show me top 5 customer with highest account balance"
+    monkeypatch.setattr(pipeline.llm, "generate_plan", lambda _: _plan(
+        dimensions=["C_CUSTKEY", "C_NAME", "C_ACCTBAL"],
+        sort=[{"field": "C_ACCTBAL", "direction": "DESC"}], limit=5,
+    ))
+    calls = []
+
+    def execute(sql, parameters=None):
+        calls.append((sql, parameters))
+        return ["C_CUSTKEY", "C_NAME", "C_ACCTBAL"], [(4, "Acme", 950.0)], "qid-top-five"
+
+    monkeypatch.setattr(pipeline.snowflake_client, "execute_sql", execute)
+    result = pipeline.ask(question)
+
+    assert result["outcome"] == "success"
+    assert result["plan_validation"]["status"] == "passed"
+    assert result["validation"]["status"] == "passed"
+    assert "ORDER BY C_ACCTBAL DESC LIMIT 5" in result["sql"]
+    assert calls == [(result["sql"], None)]
+    assert result["rows"] == [[4, "Acme", 950.0]]
+    assert result["query_id"] == "qid-top-five"
+
+
+def test_plan_validation_warning_reports_safe_failure_location_without_execution(monkeypatch):
+    monkeypatch.setattr(pipeline.llm, "generate_plan", lambda _: _plan(
+        dimensions=["C_CUSTKEY", "C_ACCTBAL"],
+        sort=[{"field": "C_ACCTBAL", "direction": "DESCENDING"}], limit=5,
+    ))
+    monkeypatch.setattr(pipeline.snowflake_client, "execute_sql", lambda *_: pytest.fail("invalid plan reached Snowflake"))
+    result = pipeline.ask("Show me top 5 customer with highest account balance")
+
+    assert result["outcome"] == "rejected"
+    assert result["sql"] is None
+    assert result["execution"]["status"] == "not_run"
+    assert "sort[0].direction" in result["warnings"][0]
+    assert "DESCENDING" not in result["warnings"][0]
 
 
 @pytest.mark.parametrize("sql", [
@@ -244,6 +284,7 @@ def test_llm_failure_does_not_claim_validation_execution_or_verification(monkeyp
 
 
 def test_ollama_http_response_is_parsed(monkeypatch):
+    requests = []
     class Response:
         def __enter__(self):
             return self
@@ -252,9 +293,16 @@ def test_ollama_http_response_is_parsed(monkeypatch):
         def read(self):
             return json.dumps({"message": {"content": json.dumps(_plan(dimensions=["C_CUSTKEY"]))}}).encode()
 
-    monkeypatch.setattr(llm.urllib.request, "urlopen", lambda request, timeout: Response())
+    def open_request(request, timeout):
+        requests.append((json.loads(request.data), timeout))
+        return Response()
+
+    monkeypatch.setattr(llm.urllib.request, "urlopen", open_request)
     result = llm.generate_plan("show keys")
     assert result["dimensions"] == ["C_CUSTKEY"]
+    assert requests[0][0]["format"] == QueryPlan.model_json_schema()
+    assert requests[0][1] == 120
+    assert "top N individual customers" in requests[0][0]["messages"][0]["content"]
 
 
 def test_snowflake_client_sets_timeout_and_returns_query_id(monkeypatch):

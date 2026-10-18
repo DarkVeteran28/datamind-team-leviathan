@@ -166,7 +166,10 @@ def ask(question):
     except PlanValidationError as exc:
         base["plan_validation"] = exc.evidence
         base["answer"] = "The generated query plan was rejected before SQL compilation."
-        base["warnings"] = ["Query-plan validation failed: the plan is malformed or unsupported."]
+        failed_check = next((item for item in exc.evidence.get("checks", [])
+                             if item.get("status") == "failed"), None)
+        reason = failed_check.get("detail") if failed_check else "the plan is malformed or unsupported."
+        base["warnings"] = [f"Query-plan validation failed: {reason}"]
         base["outcome"] = "rejected"
         return base
     base["query_plan"] = plan.model_dump(mode="json")

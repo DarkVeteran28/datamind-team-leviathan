@@ -57,6 +57,39 @@ def _error(message: str, checks: List[Dict[str, str]], check: str) -> None:
     raise PlanValidationError(message, {"status": "rejected", "checks": list(checks)})
 
 
+_PLAN_FIELDS = {
+    "version", "status", "dimensions", "metrics", "filters", "sort", "limit",
+    "message", "assumptions", "operation", "field", "operator", "value", "direction",
+}
+
+
+def _safe_schema_error_detail(error: ValidationError) -> str:
+    """Describe schema failures without echoing model-provided values or keys."""
+    locations = []
+    for item in error.errors(include_input=False, include_url=False)[:4]:
+        path = []
+        unknown = False
+        for part in item.get("loc", ()):
+            if isinstance(part, int):
+                if path:
+                    path[-1] += f"[{part}]"
+            elif isinstance(part, str) and part in _PLAN_FIELDS:
+                path.append(part)
+            else:
+                unknown = True
+        if unknown:
+            path.append("unrecognized field")
+        label = ".".join(path) or "query plan"
+        error_type = item.get("type", "")
+        if error_type == "extra_forbidden":
+            label = "unrecognized field"
+        locations.append(f"{label} ({error_type})" if error_type else label)
+    if not locations:
+        return "The generated query plan does not match the supported schema."
+    extra = " Additional schema errors omitted." if len(error.errors()) > 4 else ""
+    return "Schema mismatch at " + "; ".join(locations) + "." + extra
+
+
 def _metric_expression(metric: Metric) -> str:
     if metric.operation == "count" and metric.field is None:
         return "COUNT(*)"
@@ -85,7 +118,16 @@ def validate_query_plan(raw: Any) -> Tuple[QueryPlan, Dict[str, Any]]:
         _error("The generated query plan does not match the supported schema.", checks, "plan_schema")
     try:
         plan = QueryPlan.model_validate(raw)
-    except (ValidationError, TypeError, ValueError):
+    except ValidationError as exc:
+        checks.append({
+            "name": "plan_schema", "status": "failed",
+            "detail": _safe_schema_error_detail(exc),
+        })
+        raise PlanValidationError(
+            "The generated query plan does not match the supported schema.",
+            {"status": "rejected", "checks": list(checks)},
+        ) from None
+    except (TypeError, ValueError):
         _error("The generated query plan does not match the supported schema.", checks, "plan_schema")
     checks.append({"name": "plan_schema", "status": "passed", "detail": "Plan matches version 1 and contains no unknown fields."})
 

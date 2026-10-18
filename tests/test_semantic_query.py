@@ -51,6 +51,47 @@ def test_row_query_can_sort_by_an_approved_field_not_in_the_projection():
     assert "ORDER BY C_ACCTBAL DESC LIMIT 5" in sql
 
 
+def test_individual_top_five_customers_by_balance_is_a_supported_plan():
+    validated, evidence = validate_query_plan(plan(
+        dimensions=["C_CUSTKEY", "C_NAME", "C_ACCTBAL"],
+        sort=[{"field": "C_ACCTBAL", "direction": "DESC"}], limit=5,
+    ))
+    sql, parameters = compile_query_plan(validated)
+    normalized, sql_evidence = validate_sql_with_evidence(sql)
+
+    assert "ORDER BY C_ACCTBAL DESC LIMIT 5" in normalized
+    assert "GROUP BY" not in normalized
+    assert parameters == []
+    assert evidence["status"] == "passed"
+    assert sql_evidence["status"] == "passed"
+
+
+def test_aggregate_customer_plan_cannot_sort_by_unselected_raw_balance():
+    with pytest.raises(PlanValidationError) as rejected:
+        validate_query_plan(plan(
+            dimensions=["C_CUSTKEY", "C_NAME"],
+            metrics=[{"operation": "max", "field": "C_ACCTBAL"}],
+            sort=[{"field": "C_ACCTBAL", "direction": "DESC"}], limit=5,
+        ))
+
+    failure = next(item for item in rejected.value.evidence["checks"] if item["status"] == "failed")
+    assert failure["name"] == "sort_semantics"
+    assert "selected metric" in failure["detail"]
+
+
+def test_schema_error_identifies_bad_sort_field_without_echoing_model_value():
+    with pytest.raises(PlanValidationError) as rejected:
+        validate_query_plan(plan(
+            dimensions=["C_CUSTKEY", "C_ACCTBAL"],
+            sort=[{"field": "C_ACCTBAL", "direction": "DESCENDING"}], limit=5,
+        ))
+
+    detail = rejected.value.evidence["checks"][0]["detail"]
+    assert "sort[0].direction" in detail
+    assert "literal_error" in detail
+    assert "DESCENDING" not in detail
+
+
 def test_filter_values_are_parameter_bound_and_cannot_change_compiled_sql():
     injected = "BUILDING' OR 1=1; DROP TABLE CUSTOMER --"
     validated, _ = validate_query_plan(plan(
