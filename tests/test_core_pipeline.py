@@ -52,6 +52,8 @@ def test_approved_selects_validate_and_are_limited(sql):
     "SELECT C_CUSTKEY FROM CUSTOMER JOIN ORDERS ON 1=1",
     "SELECT C_CUSTKEY FROM CUSTOMER WHERE RANDOM() > 0",
     "SELECT C_CUSTKEY FROM CUSTOMER LIMIT 0",
+    "SELECT C_CUSTKEY FROM CUSTOMER LIMIT -1",
+    "SELECT C_CUSTKEY FROM CUSTOMER WHERE C_CUSTKEY IN (SELECT C_CUSTKEY FROM CUSTOMER)",
 ])
 def test_unsafe_sql_is_rejected(sql):
     with pytest.raises(ValueError):
