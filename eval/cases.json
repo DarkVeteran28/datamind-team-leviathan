@@ -1,0 +1,67 @@
+[
+  {
+    "name": "representative customer rows",
+    "question": "Show two customers",
+    "model_sql": "SELECT C_CUSTKEY, C_NAME FROM CUSTOMER ORDER BY C_CUSTKEY LIMIT 2",
+    "columns": ["C_CUSTKEY", "C_NAME"],
+    "rows": [[1, "Customer#000000001"], [2, "Customer#000000002"]],
+    "query_id": "eval-rows-1",
+    "expected": {"outcome": "success", "row_count": 2, "answer_contains": ["Customer#000000001", "2 rows"], "sql_contains": ["LIMIT 2"], "model_calls": 1, "db_calls": 1}
+  },
+  {
+    "name": "aggregate count",
+    "question": "How many customers are in the table?",
+    "model_sql": "SELECT COUNT(*) AS CUSTOMER_COUNT FROM CUSTOMER",
+    "columns": ["CUSTOMER_COUNT"],
+    "rows": [[25]],
+    "query_id": "eval-aggregate-1",
+    "expected": {"outcome": "success", "row_count": 1, "answer_contains": ["CUSTOMER_COUNT=25"], "sql_contains": ["COUNT(*)", "LIMIT 100"], "model_calls": 1, "db_calls": 1}
+  },
+  {
+    "name": "segment filter",
+    "question": "Show customers in the BUILDING segment",
+    "model_sql": "SELECT C_CUSTKEY, C_MKTSEGMENT FROM CUSTOMER WHERE C_MKTSEGMENT = 'BUILDING' LIMIT 1",
+    "columns": ["C_CUSTKEY", "C_MKTSEGMENT"],
+    "rows": [[7, "BUILDING"]],
+    "query_id": "eval-filter-1",
+    "expected": {"outcome": "success", "row_count": 1, "answer_contains": ["C_MKTSEGMENT=BUILDING"], "sql_contains": ["BUILDING"], "model_calls": 1, "db_calls": 1}
+  },
+  {
+    "name": "ambiguous ranking",
+    "question": "Who are the best customers?",
+    "expected": {"outcome": "clarification", "row_count": 0, "answer_contains": ["define"], "model_calls": 0, "db_calls": 0}
+  },
+  {
+    "name": "invalid generated SQL",
+    "question": "Show private customer addresses",
+    "model_sql": "SELECT C_ADDRESS FROM CUSTOMER",
+    "expected": {"outcome": "rejected", "row_count": 0, "answer_contains": ["validation failed"], "sql_contains": ["C_ADDRESS"], "model_calls": 1, "db_calls": 0}
+  },
+  {
+    "name": "empty result",
+    "question": "Find customers in an absent segment",
+    "model_sql": "SELECT C_CUSTKEY FROM CUSTOMER WHERE C_MKTSEGMENT = 'ABSENT'",
+    "columns": ["C_CUSTKEY"],
+    "rows": [],
+    "query_id": "eval-empty-1",
+    "expected": {"outcome": "success", "row_count": 0, "answer_contains": ["returned no rows"], "model_calls": 1, "db_calls": 1}
+  },
+  {
+    "name": "LLM failure",
+    "question": "Count customers",
+    "llm_error": "mock model unavailable",
+    "expected": {"outcome": "failed", "row_count": 0, "answer_contains": ["generation or validation failed"], "model_calls": 1, "db_calls": 0}
+  },
+  {
+    "name": "Snowflake failure",
+    "question": "Show customer keys",
+    "model_sql": "SELECT C_CUSTKEY FROM CUSTOMER",
+    "db_error": "mock database unavailable",
+    "expected": {"outcome": "failed", "row_count": 0, "answer_contains": ["Snowflake query failed"], "sql_contains": ["C_CUSTKEY"], "model_calls": 1, "db_calls": 1}
+  },
+  {
+    "name": "greeting",
+    "question": "Hello!",
+    "expected": {"outcome": "no_query", "row_count": 0, "answer_contains": ["Hello"], "model_calls": 0, "db_calls": 0}
+  }
+]
