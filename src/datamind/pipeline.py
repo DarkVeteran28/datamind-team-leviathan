@@ -2,7 +2,7 @@
 from dotenv import load_dotenv
 
 from . import llm, snowflake_client
-from .validator import validate_sql
+from .validator import SQLValidationError, validate_sql_with_evidence
 
 load_dotenv()
 
@@ -44,7 +44,10 @@ def _answer(columns, rows):
 def ask(question):
     """Answer a question as a dictionary with SQL and Snowflake evidence."""
     base = {"answer": "", "sql": None, "columns": [], "rows": [], "query_id": None,
-            "assumptions": [], "warnings": [], "row_count": 0}
+            "assumptions": [], "warnings": [], "row_count": 0,
+            "validation": {"status": "not_run", "checks": []},
+            "execution": {"status": "not_run", "checks": []},
+            "verification": {"status": "not_run", "checks": []}}
     if not isinstance(question, str) or not question.strip():
         base.update(answer="Please enter a question.", warnings=["Question is empty."])
         return base
@@ -66,21 +69,39 @@ def ask(question):
             assumptions = [assumptions]
         base["assumptions"] = [str(item) for item in assumptions] if isinstance(assumptions, list) else []
         base["sql"] = generated.get("sql")
-        base["sql"] = validate_sql(base["sql"])
     except Exception as exc:
         base["answer"] = "I couldn’t complete the request because SQL generation or validation failed."
-        base["warnings"] = [str(exc) if isinstance(exc, ValueError) else f"SQL generation failed ({type(exc).__name__})."]
+        base["warnings"] = [f"SQL generation failed ({type(exc).__name__})."]
+        return base
+    try:
+        base["sql"], base["validation"] = validate_sql_with_evidence(base["sql"])
+    except SQLValidationError as exc:
+        base["validation"] = exc.evidence
+        base["answer"] = "I couldn’t complete the request because SQL validation failed: the generated query was rejected."
+        base["warnings"] = [str(exc)]
+        return base
+    except Exception as exc:
+        base["validation"] = {"status": "rejected", "checks": []}
+        base["answer"] = "I couldn’t complete the request because SQL validation failed."
+        base["warnings"] = [f"SQL validation failed ({type(exc).__name__})."]
         return base
     try:
         columns, rows, query_id = snowflake_client.execute_sql(base["sql"])
         columns = list(columns)
         rows = [list(row) for row in rows]
+        base.update(columns=columns, rows=rows, query_id=query_id, row_count=len(rows))
         if any(len(row) != len(columns) for row in rows):
             raise ValueError("Snowflake returned rows that do not match the column metadata.")
         base.update(columns=columns, rows=rows, query_id=query_id,
                     row_count=len(rows), answer=_answer(columns, rows))
+        base["execution"] = {"status": "succeeded", "checks": [
+            {"name": "snowflake_execution", "status": "passed", "detail": "Snowflake returned result metadata and rows."}
+        ]}
     except Exception as exc:
-        base["query_id"] = getattr(exc, "query_id", None)
+        base["query_id"] = getattr(exc, "query_id", base["query_id"])
         base["answer"] = "The Snowflake query failed; no result values are available."
         base["warnings"] = [f"Snowflake execution failed ({type(exc).__name__})."]
+        base["execution"] = {"status": "failed", "checks": [
+            {"name": "snowflake_execution", "status": "failed", "detail": "Snowflake did not return a complete result."}
+        ]}
     return base

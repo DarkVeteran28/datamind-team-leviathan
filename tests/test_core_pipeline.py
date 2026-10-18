@@ -10,10 +10,15 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from datamind import llm, pipeline, snowflake_client
-from datamind.validator import validate_sql
+from datamind.validator import validate_sql, validate_sql_with_evidence
 
 
-FIELDS = {"answer", "sql", "columns", "rows", "query_id", "assumptions", "warnings", "row_count"}
+FIELDS = {"answer", "sql", "columns", "rows", "query_id", "assumptions", "warnings", "row_count",
+          "validation", "execution", "verification"}
+
+
+def _check(evidence, name):
+    return next(item for item in evidence["checks"] if item["name"] == name)
 
 
 def test_response_has_stable_shape_and_greeting_skips_services(monkeypatch):
@@ -41,6 +46,16 @@ def test_approved_selects_validate_and_are_limited(sql):
     normalized = validate_sql(sql)
     assert "LIMIT" in normalized.upper()
     assert "100" in normalized or "5" in normalized
+
+
+def test_validation_evidence_reports_actual_limit_cap():
+    normalized, evidence = validate_sql_with_evidence("SELECT C_CUSTKEY FROM CUSTOMER LIMIT 500")
+    assert normalized.endswith("LIMIT 100")
+    assert evidence["status"] == "passed"
+    assert _check(evidence, "row_limit") == {
+        "name": "row_limit", "status": "passed",
+        "detail": "Requested LIMIT 500 was capped at 100.",
+    }
 
 
 @pytest.mark.parametrize("sql", [
@@ -76,6 +91,13 @@ def test_pipeline_returns_actual_rows_sql_and_query_id(monkeypatch):
     assert result["row_count"] == 2
     assert "C_CUSTKEY=7" in result["answer"] and "C_NAME=Alpha" in result["answer"]
     assert result["assumptions"] == ["ordered by key"]
+    assert result["validation"]["status"] == "passed"
+    assert _check(result["validation"], "single_statement")["status"] == "passed"
+    assert _check(result["validation"], "approved_table")["detail"] == "Only SNOWFLAKE_SAMPLE_DATA.TPCH_SF1.CUSTOMER is referenced."
+    assert _check(result["validation"], "approved_columns")["status"] == "passed"
+    assert _check(result["validation"], "row_limit")["detail"] == "LIMIT 2 is within the 100-row maximum."
+    assert result["execution"]["status"] == "succeeded"
+    assert result["verification"] == {"status": "not_run", "checks": []}
 
 
 def test_invalid_generated_sql_is_not_executed_and_is_retained(monkeypatch):
@@ -86,6 +108,10 @@ def test_invalid_generated_sql_is_not_executed_and_is_retained(monkeypatch):
     assert result["query_id"] is None
     assert "validation failed" in result["answer"]
     assert result["warnings"]
+    assert result["validation"]["status"] == "rejected"
+    assert _check(result["validation"], "approved_columns")["status"] == "failed"
+    assert result["execution"] == {"status": "not_run", "checks": []}
+    assert result["verification"] == {"status": "not_run", "checks": []}
 
 
 def test_empty_result_is_success_without_fabricated_values(monkeypatch):
@@ -95,6 +121,9 @@ def test_empty_result_is_success_without_fabricated_values(monkeypatch):
     assert result["answer"] == "The query completed successfully and returned no rows."
     assert result["rows"] == [] and result["row_count"] == 0
     assert result["query_id"] == "qid-empty"
+    assert result["execution"]["status"] == "succeeded"
+    assert result["validation"]["status"] == "passed"
+    assert result["verification"]["status"] == "not_run"
 
 
 def test_llm_failure_is_structured_and_does_not_call_snowflake(monkeypatch):
@@ -116,6 +145,19 @@ def test_database_failure_preserves_sql_and_available_query_id(monkeypatch):
     assert result["sql"] and result["query_id"] == "qid-failed"
     assert result["rows"] == [] and result["row_count"] == 0
     assert "query failed" in result["answer"]
+    assert result["validation"]["status"] == "passed"
+    assert result["execution"]["status"] == "failed"
+    assert result["verification"]["status"] == "not_run"
+
+
+def test_llm_failure_does_not_claim_validation_execution_or_verification(monkeypatch):
+    monkeypatch.setattr(pipeline.llm, "generate_sql", lambda _: (_ for _ in ()).throw(TimeoutError("sensitive detail")))
+    monkeypatch.setattr(pipeline.snowflake_client, "execute_sql", lambda _: pytest.fail("Snowflake should not be called"))
+    result = pipeline.ask("Count customers")
+    assert result["validation"] == {"status": "not_run", "checks": []}
+    assert result["execution"] == {"status": "not_run", "checks": []}
+    assert result["verification"] == {"status": "not_run", "checks": []}
+    assert "sensitive detail" not in str(result)
 
 
 def test_ollama_http_response_is_parsed(monkeypatch):
