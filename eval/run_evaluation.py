@@ -7,7 +7,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 from datamind import pipeline
 
-FIELDS = {"answer", "sql", "columns", "rows", "query_id", "assumptions", "warnings", "row_count"}
+FIELDS = {"answer", "sql", "columns", "rows", "query_id", "assumptions", "warnings", "row_count",
+          "validation", "execution", "verification"}
 
 
 def run_case(case):
