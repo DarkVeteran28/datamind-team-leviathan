@@ -53,6 +53,67 @@ def _answer(columns, rows):
     return f"Snowflake returned {count} rows: {details}.{suffix}"
 
 
+def _verify_answer(answer, columns, rows, row_count):
+    """Check deterministic answer/result consistency, not SQL intent correctness."""
+    actual_count = len(rows)
+    checks = []
+
+    metadata_matches = row_count == actual_count
+    checks.append({
+        "name": "returned_row_count",
+        "status": "passed" if metadata_matches else "failed",
+        "detail": (f"row_count {row_count} matches {actual_count} returned rows."
+                   if metadata_matches else f"row_count {row_count} does not match {actual_count} returned rows."),
+    })
+
+    if actual_count == 0:
+        empty_is_described = answer == "The query completed successfully and returned no rows."
+        checks.append({
+            "name": "empty_result_description",
+            "status": "passed" if empty_is_described else "failed",
+            "detail": ("The answer describes an empty result." if empty_is_described
+                       else "The answer does not accurately describe the empty result."),
+        })
+        checks.append({"name": "displayed_samples", "status": "skipped",
+                       "detail": "No returned rows are available for sample comparison."})
+    else:
+        match = re.match(r"^Snowflake returned (\d+) rows?:", answer)
+        reported_count_matches = bool(match and int(match.group(1)) == actual_count)
+        checks.append({
+            "name": "answer_row_count",
+            "status": "passed" if reported_count_matches else "failed",
+            "detail": (f"The answer reports {actual_count} returned rows." if reported_count_matches
+                       else "The row count stated in the answer does not match returned rows."),
+        })
+        sample_count = min(actual_count, 3)
+        samples = [", ".join(
+            f"{column}={value if value is not None else 'NULL'}"
+            for column, value in zip(columns, row)
+        ) for row in rows[:sample_count]]
+        details = "; ".join(samples)
+        row_label = "row" if actual_count == 1 else "rows"
+        suffix = (f" Showing {sample_count} of {actual_count} rows; see rows for the complete result."
+                  if actual_count > sample_count else "")
+        expected_answer = f"Snowflake returned {actual_count} {row_label}: {details}.{suffix}"
+        rendered_answer_matches = answer == expected_answer
+        checks.append({
+            "name": "displayed_samples",
+            "status": "passed" if rendered_answer_matches else "failed",
+            "detail": ("Displayed values match the deterministic rendering of returned columns and rows."
+                       if rendered_answer_matches else
+                       "Displayed values do not match the deterministic rendering of returned columns and rows."),
+        })
+        checks.append({"name": "empty_result_description", "status": "passed",
+                       "detail": "Returned rows are present and the answer does not describe an empty result."})
+
+    checks.append({"name": "ranking_order", "status": "skipped",
+                   "detail": "The answer makes no explicit ranking claim to compare."})
+    checks.append({"name": "semantic_correctness", "status": "not_run",
+                   "detail": "Consistency checks do not establish that SQL fully captures the user's intent."})
+    status = "failed" if any(check["status"] == "failed" for check in checks) else "passed"
+    return {"status": status, "checks": checks}
+
+
 def ask(question):
     """Answer a question as a dictionary with SQL and Snowflake evidence."""
     base = {"answer": "", "sql": None, "columns": [], "rows": [], "query_id": None,
@@ -120,6 +181,9 @@ def ask(question):
         base["execution"] = {"status": "succeeded", "checks": [
             {"name": "snowflake_execution", "status": "passed", "detail": "Snowflake returned result metadata and rows."}
         ]}
+        base["verification"] = _verify_answer(base["answer"], columns, rows, base["row_count"])
+        if base["verification"]["status"] == "failed":
+            base["warnings"].append("Answer/result consistency verification failed.")
     except Exception as exc:
         base["query_id"] = getattr(exc, "query_id", base["query_id"])
         base["answer"] = "The Snowflake query failed; no result values are available."
