@@ -42,6 +42,10 @@ export interface QueryResponse {
     question?: string | null;
     options?: ClarificationOption[];
   };
+  // Intent gate fields (Phase 2)
+  intent_classification?: string;
+  missing_concepts?: string[];
+  capability_match?: StageEvidence;
 }
 
 export interface QueryRequest {

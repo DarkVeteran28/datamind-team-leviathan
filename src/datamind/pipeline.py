@@ -5,6 +5,13 @@ from dotenv import load_dotenv
 
 from . import electricity_client, llm, snowflake_client
 from .dataset_registry import DATASETS, DEFAULT_DATASET_ID
+from .intent_gate import (
+    AMBIGUOUS,
+    ANSWERABLE,
+    DATASET_METADATA,
+    UNSUPPORTED_BY_DATASET,
+    classify as classify_intent,
+)
 from .semantic_query import (
     PlanValidationError,
     compile_query_plan,
@@ -185,7 +192,7 @@ def _validate_explicit_electricity_scope(question, plan, evidence):
         is_range = (
             bool(re.search(r"\b(?:from|between)\b", lowered)
                  and re.search(r"\b(?:through|until|to)\b", lowered))
-            or bool(re.search(r"\b(?:19|20)\d{2}\s*[-–]\s*(?:19|20)\d{2}\b", question))
+            or bool(re.search(r"\b(?:19|20)\d{2}\s*[-\u2013]\s*(?:19|20)\d{2}\b", question))
         )
         if not is_range:
             detail = "Multiple distinct years need a range or comparison that the current filter grammar does not support."
@@ -237,16 +244,32 @@ def _deterministic_electricity_ranking(question):
     }
 
 
+# The stable set of fields every ask() response must include.
+_RESPONSE_FIELDS = frozenset({
+    "answer", "dataset_id", "plan_source", "sql", "columns", "rows", "query_id",
+    "assumptions", "warnings", "row_count", "validation", "execution", "verification",
+    "clarification", "sql_parameters", "query_plan", "plan_validation", "outcome",
+    "intent_classification", "missing_concepts",
+    "capability_match",
+})
+
+
 def ask(question, dataset_id=DEFAULT_DATASET_ID):
     """Answer a question as a dictionary with SQL and Snowflake evidence."""
-    base = {"answer": "", "dataset_id": dataset_id, "plan_source": "not_run", "sql": None, "sql_parameters": [], "query_plan": None,
-            "plan_validation": {"status": "not_run", "checks": []},
-            "outcome": "no_query", "columns": [], "rows": [], "query_id": None,
-            "assumptions": [], "warnings": [], "row_count": 0,
-            "validation": {"status": "not_run", "checks": []},
-            "execution": {"status": "not_run", "checks": []},
-            "verification": {"status": "not_run", "checks": []},
-            "clarification": {"required": False, "question": None, "options": []}}
+    base = {
+        "answer": "", "dataset_id": dataset_id, "plan_source": "not_run",
+        "sql": None, "sql_parameters": [], "query_plan": None,
+        "plan_validation": {"status": "not_run", "checks": []},
+        "outcome": "no_query", "columns": [], "rows": [], "query_id": None,
+        "assumptions": [], "warnings": [], "row_count": 0,
+        "validation": {"status": "not_run", "checks": []},
+        "execution": {"status": "not_run", "checks": []},
+        "verification": {"status": "not_run", "checks": []},
+        "clarification": {"required": False, "question": None, "options": []},
+        "intent_classification": "not_run",
+        "missing_concepts": [],
+        "capability_match": {"status": "not_run", "checks": []},
+    }
     if not isinstance(question, str) or not question.strip():
         base.update(answer="Please enter a question.", warnings=["Question is empty."])
         return base
@@ -254,15 +277,93 @@ def ask(question, dataset_id=DEFAULT_DATASET_ID):
         base.update(answer="The requested dataset is not supported.", outcome="unsupported",
                     warnings=["Dataset ID is not registered."])
         return base
-    engine = "local dataset" if dataset_id == "electricity_mix" else "Snowflake"
+    engine = "Snowflake"
     intent = _intent(question)
     if intent == "greeting":
-        base["answer"] = f"Hello! I’m DataMind. Ask me about {DATASETS[dataset_id]['name']}."
+        base["answer"] = f"Hello! I'm DataMind. Ask me about {DATASETS[dataset_id]['name']}."
         return base
     if intent == "identity":
         fields = ", ".join(DATASETS[dataset_id]["fields"])
-        base["answer"] = f"I’m DataMind. I can query {DATASETS[dataset_id]['name']}: {fields}."
+        base["answer"] = f"I'm DataMind. I can query {DATASETS[dataset_id]['name']}: {fields}."
         return base
+
+    # ------------------------------------------------------------------
+    # Semantic Intent Gate
+    # Runs before any LLM call or SQL execution.  Classifies the request
+    # deterministically against registered dataset capabilities.
+    # Greetings and identity questions are handled above; everything else
+    # (including ambiguous ranking questions) goes through this gate.
+    # ------------------------------------------------------------------
+    gate = classify_intent(question, dataset_id)
+    base["intent_classification"] = gate.outcome
+    if gate.capability_match is not None:
+        base["capability_match"] = gate.capability_match
+
+    # Preserve the existing customer-ranking clarification before a generic
+    # unsupported-concept rule (for example, "spending frequency") can mask
+    # the missing choice of an available ranking metric.
+    if dataset_id == DEFAULT_DATASET_ID and intent == "ambiguous":
+        clarification_q = (
+            "How should I define \u201cbest\u201d or \u201ctop\u201d? "
+            "Choose highest account balance, customer name A\u2013Z, or customer key ascending."
+        )
+        base["intent_classification"] = AMBIGUOUS
+        base["answer"] = clarification_q
+        base["warnings"] = ["Clarification required before querying."]
+        base["outcome"] = "clarification"
+        base["clarification"] = {
+            "required": True,
+            "question": clarification_q,
+            "options": [
+                {"label": "Highest account balance", "column": "C_ACCTBAL", "direction": "DESC"},
+                {"label": "Customer name A\u2013Z", "column": "C_NAME", "direction": "ASC"},
+                {"label": "Customer key ascending", "column": "C_CUSTKEY", "direction": "ASC"},
+            ],
+        }
+        return base
+
+    if gate.outcome == DATASET_METADATA:
+        # Answer from registry metadata — no LLM, no SQL, no DB call.
+        base["answer"] = gate.metadata_answer or gate.message or "Dataset information is not available."
+        base["outcome"] = "metadata"
+        return base
+
+    if gate.outcome == UNSUPPORTED_BY_DATASET:
+        # Dataset cannot answer this question — block execution entirely.
+        base["answer"] = gate.message or (
+            "This question requires data or capabilities not available in the selected dataset."
+        )
+        base["missing_concepts"] = gate.missing_concepts
+        base["outcome"] = "unsupported"
+        if gate.missing_concepts:
+            base["warnings"] = [
+                f"Intent gate: request requires {', '.join(gate.missing_concepts)} "
+                f"which is not in this dataset. No SQL was compiled or executed."
+            ]
+        else:
+            base["warnings"] = [
+                "Intent gate: request is outside the supported dataset capabilities. "
+                "No SQL was compiled or executed."
+            ]
+        return base
+
+    if gate.outcome == AMBIGUOUS:
+        # Gate-level ambiguity (e.g. missing year/country for electricity).
+        # The existing tpch_customer ambiguous-ranking path is handled below
+        # by _intent() == "ambiguous" for backwards compatibility with tests.
+        base["answer"] = gate.message or "Please clarify your question."
+        base["outcome"] = "clarification"
+        base["clarification"] = {
+            "required": True,
+            "question": gate.message or "Please clarify your question.",
+            "options": [],
+        }
+        base["warnings"] = ["Intent gate: clarification required before planning or execution."]
+        return base
+
+    # gate.outcome == ANSWERABLE — proceed with the existing pipeline stages.
+
+    # Electricity country-ranking year clarification (existing check kept intact)
     if dataset_id == "electricity_mix" and _is_electricity_country_ranking(question):
         lowered = question.casefold()
         has_year = bool(re.search(r"\b(?:19|20)\d{2}\b", question))
@@ -273,21 +374,7 @@ def ask(question, dataset_id=DEFAULT_DATASET_ID):
                         warnings=["Clarification required before query planning."],
                         clarification={"required": True, "question": clarification, "options": []})
             return base
-    if intent == "ambiguous":
-        question = "How should I define “best” or “top”? Choose highest account balance, customer name A–Z, or customer key ascending."
-        base["answer"] = question
-        base["warnings"] = ["Clarification required before querying."]
-        base["outcome"] = "clarification"
-        base["clarification"] = {
-            "required": True,
-            "question": question,
-            "options": [
-                {"label": "Highest account balance", "column": "C_ACCTBAL", "direction": "DESC"},
-                {"label": "Customer name A–Z", "column": "C_NAME", "direction": "ASC"},
-                {"label": "Customer key ascending", "column": "C_CUSTKEY", "direction": "ASC"},
-            ],
-        }
-        return base
+
     try:
         deterministic_plan = (_deterministic_electricity_ranking(question)
                               if dataset_id == "electricity_mix" else None)
@@ -299,7 +386,7 @@ def ask(question, dataset_id=DEFAULT_DATASET_ID):
             generated = (llm.generate_plan(question) if dataset_id == DEFAULT_DATASET_ID
                          else llm.generate_plan(question, dataset_id=dataset_id))
     except Exception as exc:
-        base["answer"] = "I couldn’t complete the request because query-plan generation failed."
+        base["answer"] = "I couldn't complete the request because query-plan generation failed."
         base["warnings"] = [f"Query-plan generation failed ({type(exc).__name__})."]
         base["outcome"] = "failed"
         return base
@@ -351,7 +438,9 @@ def ask(question, dataset_id=DEFAULT_DATASET_ID):
         return base
     try:
         if dataset_id == "electricity_mix":
-            columns, rows, query_id = electricity_client.execute_sql(base["sql"], base["sql_parameters"])
+            columns, rows, query_id = snowflake_client.execute_sql(
+                base["sql"], base["sql_parameters"], dataset_id=dataset_id,
+            )
         elif base["sql_parameters"]:
             columns, rows, query_id = snowflake_client.execute_sql(base["sql"], base["sql_parameters"])
         else:

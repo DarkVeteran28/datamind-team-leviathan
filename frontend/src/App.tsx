@@ -35,6 +35,7 @@ const navTargets: Record<SectionId, string> = {
 
 function queryOutcome(result?: QueryResponse): string {
   if (!result) return 'unknown';
+  if (result.outcome === 'metadata') return 'passed';
   if (result.outcome === 'unsupported' || result.outcome === 'rejected' || result.outcome === 'failed') return result.outcome;
   if (result.clarification?.required) return 'skipped';
   if (result.execution?.status) return result.execution.status;
@@ -45,7 +46,7 @@ function queryOutcome(result?: QueryResponse): string {
 function QueryReceipt({ result }: { result: QueryResponse }) {
   const [copied, setCopied] = useState(false);
   const queryId = result.query_id;
-  const isLocal = result.dataset_id === 'electricity_mix';
+  const engine = result.execution?.engine || 'Snowflake';
   const copy = async () => {
     if (!queryId) return;
     try {
@@ -55,12 +56,9 @@ function QueryReceipt({ result }: { result: QueryResponse }) {
     } catch { setCopied(false); }
   };
   if (!queryId) {
-    if (isLocal && result.execution?.status === 'succeeded') {
-      return <div className="receipt unavailable"><span className="receipt-icon"><Database size={17} /></span><div><strong>Local SQLite execution · no remote query ID</strong><p>The bundled electricity CSV was queried locally. SQL, returned rows, and dataset identity are the execution evidence.</p></div></div>;
-    }
     const reason = result.clarification?.required ? 'Clarification was requested before SQL generation.'
       : result.validation?.status === 'rejected' ? 'SQL validation rejected the proposal before execution.'
-        : result.execution?.status === 'failed' ? `${isLocal ? 'Local SQLite' : 'Snowflake'} execution failed; a query ID may be unavailable.`
+        : result.execution?.status === 'failed' ? `${engine} execution failed; a query ID may be unavailable.`
           : result.sql ? 'This response does not include a query ID.' : 'No SQL or query ID was produced.';
     return <div className="receipt unavailable"><span className="receipt-icon"><CircleAlert size={17} /></span><div><strong>No execution receipt</strong><p>{reason}</p></div></div>;
   }
@@ -71,15 +69,38 @@ function QueryReceipt({ result }: { result: QueryResponse }) {
 
 function AnswerCard({ result, question }: { result: QueryResponse; question: string }) {
   const clarification = result.clarification?.required === true;
-  const failed = ['failed', 'rejected', 'unsupported'].includes(result.outcome || '') || result.execution?.status === 'failed' || result.verification?.status === 'failed' || result.validation?.status === 'rejected';
-  return <motion.section className={`answer-card ${clarification ? 'answer-clarification' : failed ? 'answer-warning' : 'answer-result'}`}
+  const isMetadata = result.outcome === 'metadata';
+  const isIntentUnsupported = result.outcome === 'unsupported' && result.intent_classification === 'UNSUPPORTED_BY_DATASET';
+  const failed = !isMetadata && (
+    ['failed', 'rejected', 'unsupported'].includes(result.outcome || '') ||
+    result.execution?.status === 'failed' ||
+    result.verification?.status === 'failed' ||
+    result.validation?.status === 'rejected'
+  );
+  const cardClass = clarification ? 'answer-clarification'
+    : isMetadata ? 'answer-metadata'
+    : isIntentUnsupported ? 'answer-unsupported'
+    : failed ? 'answer-warning'
+    : 'answer-result';
+  return <motion.section className={`answer-card ${cardClass}`}
     initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.24 }}>
     <div className="answer-topline"><span className="eyebrow">RESPONSE FOR</span><span className="response-question">{question}</span><StatusBadge status={queryOutcome(result)} /></div>
-    {clarification ? <div className="clarification-content"><h3>One detail before I query</h3><p>{result.clarification?.question || result.answer}</p>
+    {clarification && !isIntentUnsupported ? <div className="clarification-content"><h3>One detail before I query</h3><p>{result.clarification?.question || result.answer}</p>
       <div className="choice-list">{result.clarification?.options?.map((option, index) => <span className="choice-chip" key={`${option.label}-${index}`}>{option.label || 'Option unavailable'}</span>)}</div>
       <span className="microcopy">No SQL was executed and no query ID was created for this response.</span>
+    </div> : isMetadata ? <div className="metadata-content">
+      <h3>Dataset information</h3>
+      <pre className="metadata-answer">{result.answer || 'No information available.'}</pre>
+      <span className="microcopy">Answered from registered dataset metadata. No SQL was compiled or executed.</span>
+    </div> : isIntentUnsupported ? <div className="unsupported-content">
+      <h3>This dataset cannot answer that question</h3>
+      <p>{result.answer || 'The selected dataset does not contain the required data.'}</p>
+      {result.missing_concepts && result.missing_concepts.length > 0 && (
+        <p className="missing-concepts">Missing: <strong>{result.missing_concepts.join(', ')}</strong></p>
+      )}
+      <span className="microcopy">No SQL was compiled or executed. Select a dataset that contains the required data.</span>
     </div> : <><h3>{result.answer || 'No answer text was returned.'}</h3>
-      {result.assumptions?.length ? <p className="answer-assumption">Interpretation: {result.assumptions.join(' · ')}</p> : null}
+      {result.assumptions?.length ? <p className="answer-assumption">Interpretation: {result.assumptions.join(' \u00b7 ')}</p> : null}
     </>}
     {(result.warnings || []).map((warning, index) => <p className="response-warning" key={`${warning}-${index}`}><CircleAlert size={14} />{warning}</p>)}
   </motion.section>;
@@ -140,6 +161,7 @@ export default function App() {
   const [apiReady, setApiReady] = useState<boolean | null>(null);
   const [datasetId, setDatasetId] = useState(DEFAULT_DATASET_ID);
   const [datasets, setDatasets] = useState<DatasetMetadata[]>([]);
+  const [catalogError, setCatalogError] = useState('');
   const [clarificationSubmitting, setClarificationSubmitting] = useState<string | null>(null);
   const inFlight = useRef(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -147,7 +169,15 @@ export default function App() {
 
   useEffect(() => {
     void checkApiProcess().then(setApiReady);
-    void getDatasetCatalog().then(catalog => setDatasets(catalog.datasets)).catch(() => setDatasets([]));
+    void getDatasetCatalog()
+      .then(catalog => {
+        setDatasets(catalog.datasets);
+        setCatalogError('');
+      })
+      .catch((caught: unknown) => {
+        setDatasets([]);
+        setCatalogError(caught instanceof Error ? caught.message : 'Dataset catalog unavailable');
+      });
   }, []);
   const selectedDataset = datasets.find(dataset => dataset.id === datasetId);
   const examples = datasetId === 'electricity_mix' ? ELECTRICITY_EXAMPLES : CUSTOMER_EXAMPLES;
@@ -236,12 +266,12 @@ export default function App() {
               <select id="dataset-select" value={datasetId} onChange={event => setDatasetId(event.target.value)} disabled={loading}>
                 {(datasets.length ? datasets : [
                   { id: 'tpch_customer', name: 'TPC-H Customers', description: 'Snowflake sample customer table.', availability: 'requires_snowflake_credentials', fields: {} },
-                  { id: 'electricity_mix', name: 'Electricity Generation and Energy Mix', description: 'Offline OWID country renewable electricity generation.', availability: 'availability unavailable until API connects', fields: {} },
+                  { id: 'electricity_mix', name: 'Electricity Generation and Energy Mix', description: 'OWID renewable electricity data queried from Snowflake.', availability: 'Requires Snowflake credentials and table access', fields: {} },
                 ] as DatasetMetadata[]).map(dataset => <option key={dataset.id} value={dataset.id}>{dataset.name}</option>)}
               </select>
-              <span className="dataset-description">{selectedDataset?.description || (datasetId === 'electricity_mix' ? 'Offline OWID country renewable electricity generation.' : 'Snowflake sample customer table.')}</span>
+              <span className="dataset-description">{selectedDataset?.description || (datasetId === 'electricity_mix' ? 'OWID renewable electricity data queried from Snowflake.' : 'Snowflake sample customer table.')}</span>
               {selectedDataset && <span className="dataset-fields">{Object.entries(selectedDataset.fields).map(([name, field]) => `${name}${field.unit ? ` (${field.unit})` : ''}${field.description ? `: ${field.description}` : ''}`).join(' · ')}</span>}
-              <span className="dataset-status">{selectedDataset?.availability === 'available_offline' ? 'Available offline' : selectedDataset?.availability === 'requires_snowflake_credentials' ? 'Requires Snowflake credentials and sample-data access' : selectedDataset?.availability || 'Dataset catalog unavailable'}</span>
+              <span className="dataset-status">{catalogError ? catalogError : selectedDataset?.availability === 'available_offline' ? 'Available offline' : selectedDataset?.availability === 'requires_snowflake_credentials' ? datasetId === 'electricity_mix' ? 'Requires Snowflake credentials and access to DATAMIND_DB.ANALYTICS.ELECTRICITY_MIX' : 'Requires Snowflake credentials and sample-data access' : selectedDataset?.availability || 'Loading dataset catalog…'}</span>
             </div>
             <form onSubmit={submit}>
               <label htmlFor="question-input" className="sr-only">Ask your data</label>

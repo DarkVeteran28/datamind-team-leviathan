@@ -1,23 +1,40 @@
 """Metadata and approved query catalog for DataMind's supported datasets."""
-from pathlib import Path
-
 DEFAULT_DATASET_ID = "tpch_customer"
 
 DATASETS = {
     "tpch_customer": {
         "id": "tpch_customer",
         "name": "TPC-H Customers",
-        "description": "Snowflake sample CUSTOMER table.",
+        "description": (
+            "Snowflake sample CUSTOMER table from the TPC-H benchmark dataset. "
+            "Contains customer demographic and account data only. "
+            "No sales transactions, orders, revenue, products, dates, or pricing data."
+        ),
         "source_url": "https://docs.snowflake.com/en/user-guide/sample-data",
         "documentation_url": "https://docs.snowflake.com/en/user-guide/sample-data",
         "availability": "requires_snowflake_credentials",
         "storage": "Snowflake SNOWFLAKE_SAMPLE_DATA.TPCH_SF1.CUSTOMER",
+        "table": "SNOWFLAKE_SAMPLE_DATA.TPCH_SF1.CUSTOMER",
+        "snowflake_database": "SNOWFLAKE_SAMPLE_DATA",
+        "snowflake_schema": "TPCH_SF1",
         "fields": {
             "C_CUSTKEY": {"type": "integer", "description": "Customer key"},
             "C_NAME": {"type": "string", "description": "Customer name"},
             "C_ACCTBAL": {"type": "number", "unit": "USD", "description": "Account balance"},
             "C_MKTSEGMENT": {"type": "string", "description": "Market segment"},
         },
+        "supported": {
+            "filters": ["eq", "ne", "gt", "gte", "lt", "lte"],
+            "groupings": ["C_MKTSEGMENT"],
+            "aggregations": ["count", "sum", "avg", "min", "max"],
+            "sorting": ["C_CUSTKEY", "C_NAME", "C_ACCTBAL", "C_MKTSEGMENT", "selected metrics"],
+            "limit": 100,
+        },
+        "not_supported": [
+            "sales transactions", "order history", "revenue", "product data",
+            "date ranges", "year comparisons", "pricing", "supply chain",
+            "temperature", "employee data",
+        ],
         "license": "Snowflake sample data; accessed through user's Snowflake account.",
         "attribution": "Snowflake TPC-H sample data",
     },
@@ -28,8 +45,12 @@ DATASETS = {
         "source_url": "https://ourworldindata.org/grapher/electricity-mix",
         "documentation_url": "https://docs.owid.io/projects/etl/",
         "repository_url": "https://github.com/owid/energy-data",
-        "availability": "available_offline",
-        "storage": "data/electricity_mix.csv",
+        "availability": "requires_snowflake_credentials",
+        "storage": "Snowflake DATAMIND_DB.ANALYTICS.ELECTRICITY_MIX",
+        "table": "DATAMIND_DB.ANALYTICS.ELECTRICITY_MIX",
+        "snowflake_database": "DATAMIND_DB",
+        "snowflake_schema": "ANALYTICS",
+        "reproducible_source": "data/electricity_mix.csv",
         "fields": {
             "ENTITY": {"type": "string", "description": "Country or territory name"},
             "CODE": {"type": "string", "description": "ISO alpha-3 code"},
@@ -63,8 +84,5 @@ def list_datasets():
     result = []
     for dataset_id, item in DATASETS.items():
         entry = {**item, "default": dataset_id == DEFAULT_DATASET_ID}
-        if dataset_id == "electricity_mix":
-            data_path = Path(__file__).resolve().parents[2] / "data" / "electricity_mix.csv"
-            entry["availability"] = "available_offline" if data_path.is_file() else "bundled_data_unavailable"
         result.append(entry)
     return result

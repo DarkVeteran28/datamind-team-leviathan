@@ -11,7 +11,7 @@ This document is a short guide for reproducing checks and recording evidence. It
 | Live Ollama and Snowflake checks | Whether this local model/runtime and configured Snowflake account work together | Follow [Live demo](#live-ollama-and-snowflake-checks) |
 | Independent result comparison | Whether a query ID, SQL text, columns, and rows agree with a direct Snowflake worksheet execution | Follow [Independent comparison](#independent-result-comparison) |
 
-The first two categories do not contact Ollama or Snowflake. Evaluation cases replace the model and execution boundary with fixtures; they are not an accuracy benchmark. The live Ollama/TPC-H check requires local Ollama and Snowflake access. Electricity can be queried locally without Snowflake; record a local execution separately from the live model check.
+The first two categories do not contact Ollama or Snowflake. Evaluation cases replace the model and execution boundary with fixtures; they are not an accuracy benchmark. Both live dataset routes require local Ollama and Snowflake access.
 
 ## Reproduce automated checks
 
@@ -64,11 +64,11 @@ The Phase 5 run recorded above remains **52 tests passed** and **16/16 offline m
 The implementation in [`validator.py`](../src/datamind/validator.py), [`snowflake_client.py`](../src/datamind/snowflake_client.py), and [`pipeline.py`](../src/datamind/pipeline.py) currently applies these controls:
 
 - SQLGlot must parse exactly one read-only `SELECT`; multiple statements are rejected.
-- The only approved table is `SNOWFLAKE_SAMPLE_DATA.TPCH_SF1.CUSTOMER`.
-- The `electricity_mix` validator route allows only the local `electricity_mix` table and fields `ENTITY`, `CODE`, `YEAR`, and `RENEWABLES_TWH`; identifiers are never taken from free-form model SQL.
+- The approved tables are `SNOWFLAKE_SAMPLE_DATA.TPCH_SF1.CUSTOMER` and `DATAMIND_DB.ANALYTICS.ELECTRICITY_MIX`.
+- The `electricity_mix` validator allows only the fully qualified Snowflake target and fields `ENTITY`, `CODE`, `YEAR`, and `RENEWABLES_TWH`; identifiers are never taken from free-form model SQL.
 - TPC-H columns are `C_CUSTKEY`, `C_NAME`, `C_ACCTBAL`, and `C_MKTSEGMENT`. Arbitrary functions, joins, subqueries, window constructs, and wildcard selection are rejected (except `COUNT(*)`).
 - The validator adds or caps `LIMIT` at 100. Snowflake execution sets a 30-second statement timeout and fetches at most 101 rows to detect overflow.
-- The client does not include connector exception text in its safe execution error. Do not publish environment values or exception dumps from local runs.
+- Both datasets use the existing Snowflake client with registry-selected database/schema, a 30-second statement timeout, and no local query fallback. The client does not include connector exception text in its safe execution error. Do not publish environment values or exception dumps from local runs.
 
 The model now returns a versioned typed plan; trusted Python validates it, compiles SQL from the fixed catalog, and sends filter values separately as bind parameters. The compiled statement still passes through SQLGlot validation. These controls bound the supported query surface; they do not prove that the plan expresses the user’s intent, prevent all expensive query plans, or substitute for least-privilege Snowflake permissions. `LIMIT 100` bounds returned rows, not all server-side work. Review the typed plan, compiled SQL, bound values, assumptions, warnings, result rows, and query ID.
 
@@ -76,9 +76,9 @@ Trust Mode validation evidence reports checks actually performed. Answer verific
 
 ## Two-dataset offline evaluation
 
-`GET /api/datasets` returns registry metadata for `tpch_customer` (the default) and `electricity_mix`. A request that omits `dataset_id` retains the TPC-H Snowflake route. The electricity route uses the bundled [`data/electricity_mix.csv`](../data/electricity_mix.csv) and ephemeral SQLite; it requires neither Snowflake credentials nor network access after setup. Local responses identify `dataset_id=electricity_mix` and `execution.engine=local dataset`. `query_id` is null because local SQLite does not issue Snowflake query IDs.
+`GET /api/datasets` returns registry metadata for `tpch_customer` (the default) and `electricity_mix`. A request that omits `dataset_id` retains the TPC-H Snowflake route. Electricity queries use `DATAMIND_DB.ANALYTICS.ELECTRICITY_MIX` through Snowflake. The bundled [`data/electricity_mix.csv`](../data/electricity_mix.csv) remains the reproducible source for upload and independent offline expected values; it is not an execution fallback. Both execution routes identify `execution.engine=Snowflake` and return the Snowflake query ID when available.
 
-The checked-in evaluation currently contains 17 TPC-H fixture cases and 7 electricity cases. The electricity case expected rows were independently calculated from the bundled CSV using standard-library CSV parsing, filtering, grouping/summing, and sorting. The runner still mocks both the language model and executor; the electricity expected results must not be described as model accuracy or an end-to-end live LLM check. `tests/test_electricity.py` separately exercises the actual local SQLite executor and an API request with a mocked typed plan.
+The checked-in evaluation currently contains 17 TPC-H fixture cases and 7 electricity cases. The electricity case expected rows were independently calculated from the bundled CSV using standard-library CSV parsing, filtering, grouping/summing, and sorting. The runner mocks both the language model and Snowflake executor; these expected results must not be described as model accuracy or an end-to-end live LLM check. `tests/test_electricity.py` separately exercises mocked Snowflake routing and the actual SQL compiler/validator.
 
 OWID subset: the downloaded source view is `Entity, Code, Year, Renewables`; the compact file retains three-letter alphabetic codes for years 2000–2025 (5,387 rows, 214 entities). The measure is combined renewable electricity generation in TWh. It contains no solar/wind series, share, or per-capita measure. OWID-produced content is CC BY 4.0; the underlying third-party provider terms may differ. See [`DATASETS.md`](../DATASETS.md) for source, attribution, subset process and missing-value handling.
 
@@ -135,23 +135,23 @@ Before sharing screenshots or logs, remove passwords, tokens, account identifier
 - No automated check in this package proves live Gemma output quality, live Snowflake correctness, or semantic alignment with every user question.
 - Intent and ambiguity detection are rule-based and cover only selected patterns.
 - Ranking and semantic correctness are not established by the current deterministic answer verifier.
-- A live run requires working local Ollama, the configured model, valid Snowflake credentials, and read access to the configured sample table.
+- A live run requires working local Ollama, the configured model, valid Snowflake credentials, and read access to the selected registered table.
 - The Phase 6 live observations include a query ID and row count, but no returned row values or direct worksheet comparison were supplied. Collect those separately before claiming an independent result comparison.
 
-## Phase 7 fresh two-dataset validation (2026-10-18, Asia/Kolkata)
+## Phase 7 historical two-dataset validation before Snowflake electricity routing (2026-10-18, Asia/Kolkata)
 
-These checks were run against the repository API on localhost after the two-dataset integration and numeric YEAR normalization were present. The offline automated results are reported separately below; these live observations do not establish general model accuracy or semantic correctness.
+These checks were run before electricity execution was moved to Snowflake. They are retained as historical local-SQLite observations and do not describe the current electricity execution backend. They do not establish general model accuracy or semantic correctness.
 
-### Live Gemma with local electricity data
+### Historical Gemma with local electricity data (superseded backend)
 
 - Question: `What was renewable electricity generation in India in 2024?`
 - Gemma plan source: `ollama`; selected fields `ENTITY`, `YEAR`, `RENEWABLES_TWH`; filters `ENTITY = India` and `YEAR = 2024`; limit 1.
 - The observed Gemma JSON encoded the year as the string `"2024"`. The validator converts only canonical four-digit YEAR strings for `electricity_mix` to an integer; all other dataset and field types remain strict. The resulting bound parameters were `India` and integer `2024`.
-- Compiled SQL: `SELECT ENTITY, YEAR, RENEWABLES_TWH FROM electricity_mix WHERE ENTITY = ? AND YEAR = ? LIMIT 1`.
+- Compiled SQL at that time: `SELECT ENTITY, YEAR, RENEWABLES_TWH FROM electricity_mix WHERE ENTITY = ? AND YEAR = ? LIMIT 1`.
 - Local result: `India`, `2024`, `403.39` TWh; one row. Plan validation, SQL validation, local execution, and answer/result consistency checks passed. `query_id` is null because SQLite does not provide Snowflake query IDs.
 - An independent standard-library CSV filter for India and 2024 returned the same 403.39 TWh value. This compares the result to the bundled source file, not to an independent external dataset.
 
-### Local deterministic electricity ranking and clarification
+### Historical local deterministic electricity ranking and clarification
 
 - Question: `Rank top 3 countries by renewable electricity generation for 2025, highest first.` The narrow supported ranking rule generated a typed plan; SQL validation, local execution, and consistency checks passed. SQL used a bound year parameter and returned China (3920.47 TWh), United States (1158.8 TWh), and Brazil (649.97 TWh), three rows. An independent CSV sort for 2025 returned the same three rows in the same order. No Snowflake query ID is applicable.
 - Question: `Which countries generate the most renewable electricity?` The API requested a year clarification before planning. `plan_source=not_run`; SQL and query ID were null; plan validation, SQL validation, execution, and verification were `not_run`.
@@ -170,4 +170,24 @@ These checks were run against the repository API on localhost after the two-data
 - `cd frontend && npm test -- --run`: **18 passed**.
 - `cd frontend && npm run build`: passed. Vite emitted a bundle-size advisory for the main JavaScript chunk; TypeScript and production build completed successfully.
 
-The live checks demonstrate these particular requests on the tested local configuration. They do not demonstrate live natural-language accuracy beyond the recorded questions, universal safety, or semantic correctness. The TPC-H result has not been compared with a separate worksheet execution.
+The Phase 7 local execution observations are historical and superseded by the Snowflake routing described below. They do not demonstrate live natural-language accuracy beyond the recorded questions, universal safety, or semantic correctness. The TPC-H result has not been compared with a separate worksheet execution.
+
+## Phase 8 live Snowflake electricity and TPC-H validation (2026-10-18, Asia/Kolkata)
+
+The existing Snowflake client and configured local environment were used. No credential values were printed. The selected tables and column names are fixed in the trusted registry and validator.
+
+### Direct table checks through the existing Snowflake client
+
+- `SELECT ENTITY, CODE, YEAR, RENEWABLES_TWH FROM DATAMIND_DB.ANALYTICS.ELECTRICITY_MIX LIMIT 1` returned the columns `ENTITY`, `CODE`, `YEAR`, `RENEWABLES_TWH` and a row; query ID `01c7d012-0002-374d-000f-e7c200015ca6`.
+- `SELECT COUNT(*) AS ROW_COUNT FROM DATAMIND_DB.ANALYTICS.ELECTRICITY_MIX LIMIT 1` returned 5,387; query ID `01c7d012-0002-374d-000f-e7c200015cb2`.
+- A parameterized India 2024 query returned `India`, `IND`, `2024`, `403.39`; query ID `01c7d012-0002-374d-000f-e7c200015cbe`.
+
+### Live DataMind API queries
+
+- Question: `What was renewable electricity generation in India in 2024?` The live Gemma typed plan passed plan validation; SQL validation passed; Snowflake execution succeeded with `dataset_id=electricity_mix` and `execution.engine=Snowflake`. Compiled SQL: `SELECT ENTITY, YEAR, RENEWABLES_TWH FROM DATAMIND_DB.ANALYTICS.ELECTRICITY_MIX WHERE ENTITY = ? AND YEAR = ? LIMIT 1`; bound values `India`, integer `2024`. Returned one row: `India`, `2024`, `403.39`; consistency verification passed. Query ID: `01c7d012-0002-374d-000f-e7c200015cca`.
+- Question: `Show the five customers with the highest account balances.` The request omitted `dataset_id` and defaulted to `tpch_customer`. Snowflake validation and execution succeeded; five rows were returned and consistency verification passed. Query ID: `01c7d013-0002-374d-000f-e7c200015cd6`.
+- Both API runs used the real local Gemma model and Snowflake. They are observations of these requests, not accuracy or semantic-correctness guarantees. No independent Snowsight worksheet comparison was performed.
+
+### Fresh automated verification for Phase 8
+
+Record the commands and results from the final run below; mocked results remain distinct from the live queries above.

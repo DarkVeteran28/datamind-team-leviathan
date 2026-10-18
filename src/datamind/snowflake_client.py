@@ -1,6 +1,8 @@
 """Snowflake execution boundary for the approved demo dataset."""
 import os
 
+from .dataset_registry import DATASETS, DEFAULT_DATASET_ID
+
 
 class SnowflakeExecutionError(RuntimeError):
     """Safe execution error that retains Snowflake's query ID when known."""
@@ -10,8 +12,11 @@ class SnowflakeExecutionError(RuntimeError):
         self.query_id = query_id
 
 
-def execute_sql(sql, parameters=None):
-    """Execute validated SQL, binding compiler-supplied filter values when present."""
+def execute_sql(sql, parameters=None, dataset_id=DEFAULT_DATASET_ID):
+    """Execute validated SQL using the registered dataset's Snowflake context."""
+    dataset = DATASETS.get(dataset_id)
+    if dataset is None:
+        raise ValueError("The selected dataset is not registered.")
     # Import only when connecting so mocked/unit-only use does not need the
     # Snowflake connector installed in the interpreter.
     import snowflake.connector
@@ -22,7 +27,8 @@ def execute_sql(sql, parameters=None):
     conn = snowflake.connector.connect(
         account=os.environ["SNOWFLAKE_ACCOUNT"], user=os.environ["SNOWFLAKE_USER"],
         password=os.environ["SNOWFLAKE_PASSWORD"], warehouse=os.environ["SNOWFLAKE_WAREHOUSE"],
-        database="SNOWFLAKE_SAMPLE_DATA", schema="TPCH_SF1", login_timeout=20, network_timeout=30,
+        database=dataset["snowflake_database"], schema=dataset["snowflake_schema"],
+        login_timeout=20, network_timeout=30,
     )
     try:
         with conn.cursor() as cur:

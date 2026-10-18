@@ -257,7 +257,7 @@
   },
   {
     "name": "model supplied SQL is rejected by the plan schema",
-    "question": "Show private customer addresses",
+    "question": "Show customer keys",
     "expected": {
       "outcome": "rejected",
       "row_count": 0,
@@ -538,11 +538,11 @@
       "outcome": "unsupported",
       "row_count": 0,
       "answer_contains": [
-        "outside the supported CUSTOMER fields"
+        "order history"
       ],
-      "model_calls": 1,
+      "model_calls": 0,
       "db_calls": 0,
-      "plan_validation_status": "passed",
+      "plan_validation_status": "not_run",
       "validation_status": "not_run",
       "execution_status": "not_run",
       "verification_status": "not_run",
@@ -589,7 +589,7 @@
         ]
       ],
       "answer_contains": [
-        "local dataset returned"
+        "Snowflake returned"
       ],
       "sql_contains": [
         "COUNT(*)",
@@ -655,7 +655,7 @@
         ]
       ],
       "answer_contains": [
-        "local dataset returned"
+        "Snowflake returned"
       ],
       "sql_contains": [
         "AND",
@@ -753,7 +753,7 @@
         ]
       ],
       "answer_contains": [
-        "local dataset returned"
+        "Snowflake returned"
       ],
       "sql_contains": [
         "GROUP BY YEAR",
@@ -837,7 +837,7 @@
         ]
       ],
       "answer_contains": [
-        "local dataset returned"
+        "Snowflake returned"
       ],
       "sql_contains": [
         "ORDER BY RENEWABLES_TWH DESC",
@@ -920,14 +920,14 @@
       "outcome": "unsupported",
       "row_count": 0,
       "answer_contains": [
-        "outside the supported"
+        "solar generation breakdown"
       ],
-      "model_calls": 1,
+      "model_calls": 0,
       "db_calls": 0,
       "validation_status": "not_run",
       "execution_status": "not_run",
       "verification_status": "not_run",
-      "plan_validation_status": "passed",
+      "plan_validation_status": "not_run",
       "query_id": null
     }
   },
@@ -960,6 +960,147 @@
       "verification_status": "not_run",
       "plan_validation_status": "rejected",
       "query_id": null
+    }
+  },
+  {
+    "name": "intent gate — shirt sales against tpch_customer is unsupported",
+    "question": "How are my shirt sales this year compared to the last?",
+    "dataset_id": "tpch_customer",
+    "expected": {
+      "outcome": "unsupported",
+      "row_count": 0,
+      "model_calls": 0,
+      "db_calls": 0,
+      "validation_status": "not_run",
+      "execution_status": "not_run",
+      "verification_status": "not_run",
+      "plan_validation_status": "not_run",
+      "answer_contains": [
+        "not available"
+      ]
+    }
+  },
+  {
+    "name": "intent gate — product revenue against tpch_customer is unsupported",
+    "question": "Which product generated the most revenue?",
+    "dataset_id": "tpch_customer",
+    "expected": {
+      "outcome": "unsupported",
+      "row_count": 0,
+      "model_calls": 0,
+      "db_calls": 0,
+      "validation_status": "not_run",
+      "execution_status": "not_run",
+      "verification_status": "not_run",
+      "plan_validation_status": "not_run"
+    }
+  },
+  {
+    "name": "intent gate — temperature against electricity_mix is unsupported",
+    "question": "What was the temperature in India last year?",
+    "dataset_id": "electricity_mix",
+    "expected": {
+      "outcome": "unsupported",
+      "row_count": 0,
+      "model_calls": 0,
+      "db_calls": 0,
+      "validation_status": "not_run",
+      "execution_status": "not_run",
+      "verification_status": "not_run",
+      "plan_validation_status": "not_run"
+    }
+  },
+  {
+    "name": "intent gate — legitimate electricity question passes gate",
+    "question": "Show renewable electricity generation for India in 2024.",
+    "dataset_id": "electricity_mix",
+    "columns": ["ENTITY", "YEAR", "RENEWABLES_TWH"],
+    "rows": [["India", 2024, 403.39]],
+    "query_id": null,
+    "model_plan": {
+      "version": 1,
+      "status": "query",
+      "assumptions": [],
+      "dimensions": ["ENTITY", "YEAR", "RENEWABLES_TWH"],
+      "metrics": [],
+      "filters": [
+        {"field": "ENTITY", "operator": "eq", "value": "India"},
+        {"field": "YEAR", "operator": "eq", "value": 2024}
+      ],
+      "sort": [],
+      "limit": 1
+    },
+    "expected": {
+      "outcome": "success",
+      "row_count": 1,
+      "model_calls": 1,
+      "db_calls": 1,
+      "validation_status": "passed",
+      "execution_status": "succeeded",
+      "verification_status": "passed",
+      "plan_validation_status": "passed",
+      "answer_contains": ["Snowflake"]
+    }
+  },
+  {
+    "name": "intent gate — legitimate customer balance question passes gate",
+    "question": "Show the five customers with the highest account balances.",
+    "dataset_id": "tpch_customer",
+    "columns": ["C_CUSTKEY", "C_NAME", "C_ACCTBAL"],
+    "rows": [[1, "Customer#000000001", 9999.99]],
+    "query_id": "eval-gate-balance-1",
+    "model_plan": {
+      "version": 1,
+      "status": "query",
+      "assumptions": [],
+      "dimensions": ["C_CUSTKEY", "C_NAME", "C_ACCTBAL"],
+      "metrics": [],
+      "filters": [],
+      "sort": [{"field": "C_ACCTBAL", "direction": "DESC"}],
+      "limit": 5
+    },
+    "expected": {
+      "outcome": "success",
+      "row_count": 1,
+      "model_calls": 1,
+      "db_calls": 1,
+      "validation_status": "passed",
+      "execution_status": "succeeded",
+      "verification_status": "passed",
+      "plan_validation_status": "passed",
+      "sql_contains": ["ORDER BY C_ACCTBAL DESC"]
+    }
+  },
+  {
+    "name": "intent gate — dataset metadata tpch_customer no db call",
+    "question": "What is this dataset about?",
+    "dataset_id": "tpch_customer",
+    "expected": {
+      "outcome": "metadata",
+      "row_count": 0,
+      "model_calls": 0,
+      "db_calls": 0,
+      "validation_status": "not_run",
+      "execution_status": "not_run",
+      "verification_status": "not_run",
+      "plan_validation_status": "not_run",
+      "answer_contains": ["customer"]
+    }
+  },
+  {
+    "name": "intent gate — columns metadata electricity_mix no db call",
+    "question": "Which columns are available?",
+    "dataset_id": "electricity_mix",
+    "expected": {
+      "outcome": "metadata",
+      "row_count": 0,
+      "model_calls": 0,
+      "db_calls": 0,
+      "validation_status": "not_run",
+      "execution_status": "not_run",
+      "verification_status": "not_run",
+      "plan_validation_status": "not_run",
+      "answer_contains": ["RENEWABLES_TWH", "ENTITY", "YEAR"]
     }
   }
 ]

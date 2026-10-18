@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Literal, Optional, Tuple
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, ValidationError
 
 from .dataset_registry import DATASETS, DEFAULT_DATASET_ID
-from .validator import MAX_ROWS, TABLE
+from .validator import MAX_ROWS
 
 FieldName = Literal[
     "C_CUSTKEY", "C_NAME", "C_ACCTBAL", "C_MKTSEGMENT",
@@ -263,7 +263,7 @@ def compile_query_plan(plan: QueryPlan, dataset_id: str = DEFAULT_DATASET_ID) ->
         expression = _metric_expression(metric)
         alias = ("ROW_COUNT" if dataset_id == "electricity_mix" else "CUSTOMER_COUNT") if metric.operation == "count" and metric.field is None else f"{metric.field}_{metric.operation.upper()}"
         selections.append(f"{expression} AS {alias}")
-    table = "electricity_mix" if dataset_id == "electricity_mix" else TABLE
+    table = DATASETS[dataset_id]["table"]
     sql = f"SELECT {', '.join(selections)} FROM {table}"
 
     parameters: List[Any] = []

@@ -8,7 +8,7 @@ vi.mock('./lib/api', () => ({
   checkApiProcess: vi.fn().mockResolvedValue(false),
   getDatasetCatalog: vi.fn().mockResolvedValue({ default_dataset_id: 'tpch_customer', datasets: [
     { id: 'tpch_customer', name: 'TPC-H Customers', description: 'Snowflake sample customer table.', availability: 'requires_snowflake_credentials', fields: { C_CUSTKEY: { type: 'integer' } }, default: true },
-    { id: 'electricity_mix', name: 'Electricity Generation and Energy Mix', description: 'OWID renewable generation.', availability: 'available_offline', fields: { RENEWABLES_TWH: { type: 'number', unit: 'TWh' } } },
+    { id: 'electricity_mix', name: 'Electricity Generation and Energy Mix', description: 'OWID renewable generation.', availability: 'requires_snowflake_credentials', fields: { RENEWABLES_TWH: { type: 'number', unit: 'TWh' } } },
   ] }),
   submitQuestion: vi.fn(),
 }));
@@ -54,7 +54,7 @@ describe('Trust Console', () => {
     vi.mocked(checkApiProcess).mockResolvedValue(false);
     vi.mocked(getDatasetCatalog).mockResolvedValue({ default_dataset_id: 'tpch_customer', datasets: [
       { id: 'tpch_customer', name: 'TPC-H Customers', description: 'Snowflake sample customer table.', availability: 'requires_snowflake_credentials', fields: { C_CUSTKEY: { type: 'integer' } }, default: true },
-      { id: 'electricity_mix', name: 'Electricity Generation and Energy Mix', description: 'OWID renewable generation.', availability: 'available_offline', fields: { RENEWABLES_TWH: { type: 'number', unit: 'TWh' } } },
+      { id: 'electricity_mix', name: 'Electricity Generation and Energy Mix', description: 'OWID renewable generation.', availability: 'requires_snowflake_credentials', fields: { RENEWABLES_TWH: { type: 'number', unit: 'TWh' } } },
     ] });
   });
 
@@ -206,23 +206,34 @@ describe('Trust Console', () => {
     expect(screen.getAllByText('query-123').length).toBeGreaterThan(0);
   });
 
-  it('sends the selected electricity dataset and displays local execution evidence', async () => {
+  it('shows the catalog failure reason instead of a generic unavailable label', async () => {
+    vi.mocked(getDatasetCatalog).mockRejectedValueOnce(new Error('Dataset catalog was not found at http://127.0.0.1:8000/api/datasets. The frontend is calling an older DataMind API.'));
+    render(<App />);
+    expect(await screen.findByText(/calling an older DataMind API/)).toBeInTheDocument();
+    expect(screen.queryByText('Dataset catalog unavailable')).not.toBeInTheDocument();
+  });
+
+  it('sends the selected electricity dataset and displays Snowflake execution evidence', async () => {
     vi.mocked(submitQuestion).mockResolvedValue({
-      answer: 'local dataset returned 1 row: ENTITY=India, YEAR=2024, RENEWABLES_TWH=403.39.',
-      dataset_id: 'electricity_mix', plan_source: 'ollama', sql: 'SELECT ENTITY, YEAR, RENEWABLES_TWH FROM electricity_mix LIMIT 1',
+      answer: 'Snowflake returned 1 row: ENTITY=India, YEAR=2024, RENEWABLES_TWH=403.39.',
+      dataset_id: 'electricity_mix', plan_source: 'ollama', sql: 'SELECT ENTITY, YEAR, RENEWABLES_TWH FROM DATAMIND_DB.ANALYTICS.ELECTRICITY_MIX LIMIT 1',
       columns: ['ENTITY', 'YEAR', 'RENEWABLES_TWH'], rows: [['India', 2024, 403.39]], row_count: 1,
-      query_id: null, assumptions: [], warnings: [], outcome: 'success',
-      validation: { status: 'passed', checks: [] }, execution: { status: 'succeeded', engine: 'local dataset' },
+      query_id: 'electricity-snowflake-query-123', assumptions: [], warnings: [], outcome: 'success',
+      validation: { status: 'passed', checks: [] }, execution: { status: 'succeeded', engine: 'Snowflake' },
       verification: { status: 'passed', checks: [] },
     });
     render(<App />);
     fireEvent.change(screen.getByLabelText('Dataset'), { target: { value: 'electricity_mix' } });
+    expect(await screen.findByText(/access to DATAMIND_DB\.ANALYTICS\.ELECTRICITY_MIX/)).toBeInTheDocument();
     fireEvent.change(screen.getByRole('textbox', { name: 'Ask your data' }), { target: { value: 'renewables India 2024' } });
     fireEvent.click(screen.getByRole('button', { name: /Analyze data/i }));
 
-    expect(await screen.findByText(/local dataset returned 1 row/)).toBeInTheDocument();
+    expect(await screen.findByText(/Snowflake returned 1 row/)).toBeInTheDocument();
     expect(submitQuestion).toHaveBeenCalledWith('renewables India 2024', 'electricity_mix');
-    expect(screen.getByText(/Local SQLite execution · no remote query ID/)).toBeInTheDocument();
+    expect(screen.getAllByText('electricity-snowflake-query-123').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Snowflake execution').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Dataset capability match').length).toBeGreaterThan(0);
+    expect(screen.queryByText(/Local SQLite/)).not.toBeInTheDocument();
     expect(screen.getByText(/Plan source: ollama/)).toBeInTheDocument();
     expect(screen.getByText('403.39')).toBeInTheDocument();
   });

@@ -50,9 +50,30 @@ export function ResultsExplorer({ result }: { result: QueryResponse }) {
     ? rows.filter(row => row.some(value => String(value ?? '').toLowerCase().includes(filter.toLowerCase())))
     : rows, [filter, rows]);
   const chart = chartRows(result);
-  const sourceName = result.dataset_id === 'electricity_mix' ? 'LOCAL SQLITE' : 'SNOWFLAKE';
+  const sourceName = 'SNOWFLAKE';
   const csv = exportCsv(columns, rows);
   const csvUrl = `data:text/csv;charset=utf-8,${encodeURIComponent(csv)}`;
+
+  // Intent-gate blocked outcomes: no results to display
+  const isMetadata = result.outcome === 'metadata';
+  const isIntentUnsupported =
+    result.outcome === 'unsupported' && result.intent_classification === 'UNSUPPORTED_BY_DATASET';
+
+  if (isMetadata || isIntentUnsupported) {
+    return <section className="panel results-panel" id="results-explorer">
+      <div className="panel-heading">
+        <div><span className="eyebrow">{sourceName} RESULT SET</span><h2>Results explorer</h2></div>
+      </div>
+      <div className="empty-state">
+        <div className="empty-icon"><Table2 /></div>
+        <strong>{isMetadata ? 'No query was executed' : 'Request blocked before execution'}</strong>
+        <p>{isMetadata
+          ? 'This response was answered from dataset metadata. No database query was made.'
+          : 'The intent gate determined this dataset cannot answer the question. No SQL was compiled or executed.'
+        }</p>
+      </div>
+    </section>;
+  }
 
   return <section className="panel results-panel" id="results-explorer">
     <div className="panel-heading"><div><span className="eyebrow">{sourceName} RESULT SET</span><h2>Results explorer</h2></div>

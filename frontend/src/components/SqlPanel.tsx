@@ -21,7 +21,7 @@ export function SqlPanel({ result }: { result: QueryResponse }) {
   const [copied, setCopied] = useState(false);
   const sql = result.sql;
   const rejected = result.validation?.status === 'rejected';
-  const engine = result.execution?.engine === 'local dataset' ? 'local SQLite' : 'Snowflake';
+  const engine = result.execution?.engine || 'Snowflake';
   const copy = async () => {
     if (!sql || !navigator.clipboard) return;
     try {

@@ -16,7 +16,7 @@ from datamind.validator import validate_sql, validate_sql_with_evidence
 
 FIELDS = {"answer", "dataset_id", "plan_source", "sql", "columns", "rows", "query_id", "assumptions", "warnings", "row_count",
           "validation", "execution", "verification", "clarification", "sql_parameters",
-          "query_plan", "plan_validation", "outcome"}
+          "query_plan", "plan_validation", "outcome", "intent_classification", "missing_concepts", "capability_match"}
 
 
 def _check(evidence, name):
@@ -225,7 +225,7 @@ def test_pipeline_passes_filter_values_separately_from_compiled_sql(monkeypatch)
 def test_model_supplied_sql_field_is_rejected_before_compilation(monkeypatch):
     monkeypatch.setattr(pipeline.llm, "generate_plan", lambda _: {"version": 1, "status": "query", "sql": "SELECT C_ADDRESS FROM CUSTOMER"})
     monkeypatch.setattr(pipeline.snowflake_client, "execute_sql", lambda _: pytest.fail("invalid SQL reached Snowflake"))
-    result = pipeline.ask("Show addresses")
+    result = pipeline.ask("Show customer names")
     assert result["sql"] is None
     assert result["query_id"] is None
     assert "rejected before SQL compilation" in result["answer"]

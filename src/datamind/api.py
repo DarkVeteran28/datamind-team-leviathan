@@ -49,6 +49,10 @@ class QueryResponse(BaseModel):
     execution: Dict[str, Any] = Field(default_factory=dict)
     verification: Dict[str, Any] = Field(default_factory=dict)
     clarification: Dict[str, Any] = Field(default_factory=dict)
+    # Intent gate fields (Phase 2)
+    intent_classification: str = "not_run"
+    missing_concepts: List[str] = Field(default_factory=list)
+    capability_match: Dict[str, Any] = Field(default_factory=dict)
 
 
 def _json_safe(value):

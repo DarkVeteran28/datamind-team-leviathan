@@ -50,13 +50,15 @@ def validate_sql_with_evidence(sql, dataset_id=DEFAULT_DATASET_ID):
     if dataset_id == DEFAULT_DATASET_ID:
         allowed_table = TABLE
         allowed_columns = ALLOWED_COLUMNS
-        dialect = "snowflake"
-        expected_table = ("CUSTOMER", "TPCH_SF1", "SNOWFLAKE_SAMPLE_DATA")
     else:
-        allowed_table = "electricity_mix"
+        allowed_table = dataset["table"]
         allowed_columns = set(dataset["fields"])
-        dialect = "sqlite"
-        expected_table = ("ELECTRICITY_MIX", "", "")
+    dialect = "snowflake"
+    expected_table = (
+        allowed_table.rsplit(".", 1)[-1],
+        allowed_table.rsplit(".", 2)[-2],
+        allowed_table.rsplit(".", 2)[0],
+    )
     if not isinstance(sql, str) or not sql.strip():
         _reject(checks, "sql_input", "SQL must be a non-empty string.")
     sql = sql.strip()
@@ -108,9 +110,13 @@ def validate_sql_with_evidence(sql, dataset_id=DEFAULT_DATASET_ID):
         _reject(checks, "approved_table", "Query must reference only the approved CUSTOMER table.")
     table = tables[0]
     table_name, schema_name, catalog_name = expected_table
-    if (table.name.upper() != table_name
-            or (table.db and table.db.upper() != schema_name)
-            or (table.catalog and table.catalog.upper() != catalog_name)):
+    qualifiers_match = (
+        table.db.upper() == schema_name and table.catalog.upper() == catalog_name
+        if dataset_id != DEFAULT_DATASET_ID else
+        (not table.db or table.db.upper() == schema_name)
+        and (not table.catalog or table.catalog.upper() == catalog_name)
+    )
+    if table.name.upper() != table_name or not qualifiers_match:
         _reject(checks, "approved_table", "Query references an unapproved table.")
     detail = (f"Only {TABLE} is referenced." if dataset_id == DEFAULT_DATASET_ID
               else f"Only {allowed_table} is referenced for {dataset_id}.")

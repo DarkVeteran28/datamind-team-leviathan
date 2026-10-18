@@ -10,12 +10,13 @@ from datamind.dataset_registry import DEFAULT_DATASET_ID
 
 FIELDS = {"answer", "dataset_id", "plan_source", "sql", "columns", "rows", "query_id", "assumptions", "warnings", "row_count",
           "validation", "execution", "verification", "clarification", "sql_parameters",
-          "query_plan", "plan_validation", "outcome"}
+          "query_plan", "plan_validation", "outcome", "intent_classification", "missing_concepts", "capability_match"}
 
 
-def run_case(case):
+def run_case(case, telemetry=None):
     expected = case["expected"]
-    calls = {"model": 0, "db": 0}
+    calls = {"model": 0, "db": 0, "db_datasets": []}
+    dataset_id_for_case = case.get("dataset_id", DEFAULT_DATASET_ID)
 
     def generate(_question, dataset_id=DEFAULT_DATASET_ID):
         calls["model"] += 1
@@ -23,39 +24,37 @@ def run_case(case):
             raise RuntimeError(case["llm_error"])
         return case["model_plan"]
 
-    def execute(_sql, _parameters=None):
+    def execute_sf(_sql, _parameters=None, dataset_id=DEFAULT_DATASET_ID):
         calls["db"] += 1
+        calls["db_datasets"].append(dataset_id)
         if "db_error" in case:
             raise RuntimeError(case["db_error"])
         return case.get("columns", []), case.get("rows", []), case.get("query_id")
 
     original_generate = pipeline.llm.generate_plan
-    original_execute = pipeline.snowflake_client.execute_sql
-    original_local_execute = pipeline.electricity_client.execute_sql
+    original_execute_sf = pipeline.snowflake_client.execute_sql
     original_answer = pipeline._answer
     pipeline.llm.generate_plan = generate
-    if case.get("dataset_id", DEFAULT_DATASET_ID) == "electricity_mix":
-        pipeline.electricity_client.execute_sql = execute
-    else:
-        pipeline.snowflake_client.execute_sql = execute
+    pipeline.snowflake_client.execute_sql = execute_sf
     if "answer_override" in case:
         pipeline._answer = lambda _columns, _rows, _source="Snowflake": case["answer_override"]
     try:
-        result = pipeline.ask(case["question"], case.get("dataset_id", DEFAULT_DATASET_ID))
+        result = pipeline.ask(case["question"], dataset_id_for_case)
     finally:
         pipeline.llm.generate_plan = original_generate
-        pipeline.snowflake_client.execute_sql = original_execute
-        pipeline.electricity_client.execute_sql = original_local_execute
+        pipeline.snowflake_client.execute_sql = original_execute_sf
         pipeline._answer = original_answer
+
+    if telemetry is not None:
+        telemetry.update(calls=calls, outcome=result.get("outcome"), result=result)
 
     failures = []
     if set(result) != FIELDS:
         failures.append(f"response fields differ: {sorted(result)}")
     if result.get("row_count") != expected["row_count"]:
         failures.append(f"row_count={result.get('row_count')}, expected {expected['row_count']}")
-    expected_dataset = case.get("dataset_id", DEFAULT_DATASET_ID)
-    if result.get("dataset_id") != expected_dataset:
-        failures.append(f"dataset_id={result.get('dataset_id')!r}, expected {expected_dataset!r}")
+    if result.get("dataset_id") != dataset_id_for_case:
+        failures.append(f"dataset_id={result.get('dataset_id')!r}, expected {dataset_id_for_case!r}")
     if "plan_source" in expected and result.get("plan_source") != expected["plan_source"]:
         failures.append(f"plan_source={result.get('plan_source')!r}, expected {expected['plan_source']!r}")
     if "columns" in expected and result.get("columns") != expected["columns"]:
@@ -72,6 +71,10 @@ def run_case(case):
         failures.append(f"model calls={calls['model']}, expected {expected['model_calls']}")
     if calls["db"] != expected["db_calls"]:
         failures.append(f"database calls={calls['db']}, expected {expected['db_calls']}")
+    if calls["db_datasets"] != [dataset_id_for_case] * expected["db_calls"]:
+        failures.append(f"Snowflake dataset routing={calls['db_datasets']!r}, expected {[dataset_id_for_case] * expected['db_calls']!r}")
+    if calls["db"] and result.get("execution", {}).get("engine") != "Snowflake":
+        failures.append(f"execution.engine={result.get('execution', {}).get('engine')!r}, expected 'Snowflake'")
     outcome = result.get("outcome")
     if outcome != expected["outcome"]:
         failures.append(f"outcome={outcome}, expected {expected['outcome']}")
@@ -104,6 +107,10 @@ def run_case(case):
         actual = result.get("clarification", {}).get("required")
         if actual is not expected["clarification_required"]:
             failures.append(f"clarification.required={actual}, expected {expected['clarification_required']}")
+    if "intent_classification" in expected:
+        actual = result.get("intent_classification")
+        if actual != expected["intent_classification"]:
+            failures.append(f"intent_classification={actual!r}, expected {expected['intent_classification']!r}")
     return failures
 
 
@@ -111,14 +118,39 @@ def main():
     cases = json.loads((ROOT / "eval" / "cases.json").read_text())
     failures_by_dataset = {"tpch_customer": 0, "electricity_mix": 0}
     counts = {"tpch_customer": 0, "electricity_mix": 0}
+    intent_metrics = {
+        "correct_answerable": 0, "correct_ambiguous": 0,
+        "correct_unsupported": 0, "correct_metadata": 0,
+        "false_rejection": 0, "end_to_end_correct": 0,
+        "unsafe_execution_attempts": 0,
+    }
     print("Evaluation mode: offline mocked model and execution calls; not a live accuracy benchmark.")
-    print("TPC-H result rows are fixtures; electricity expected rows are independently derived from the bundled CSV, while the evaluator's model/executor boundaries are mocked.")
+    print("TPC-H result rows are fixtures; electricity expected rows are independently derived from the bundled CSV, while Ollama and Snowflake execution are mocked.")
     for case in cases:
         dataset_id = case.get("dataset_id", DEFAULT_DATASET_ID)
         counts.setdefault(dataset_id, 0)
         failures_by_dataset.setdefault(dataset_id, 0)
         counts[dataset_id] += 1
-        errors = run_case(case)
+        telemetry = {}
+        errors = run_case(case, telemetry)
+        expected = case["expected"]
+        outcome = expected.get("outcome", "")
+        if not errors:
+            intent_metrics["end_to_end_correct"] += 1
+        if expected.get("db_calls") == 0 and telemetry.get("calls", {}).get("db", 0) > 0:
+            intent_metrics["unsafe_execution_attempts"] += 1
+        if not errors:
+            if outcome == "success":
+                intent_metrics["correct_answerable"] += 1
+            elif outcome == "clarification":
+                intent_metrics["correct_ambiguous"] += 1
+            elif outcome == "unsupported":
+                intent_metrics["correct_unsupported"] += 1
+            elif outcome == "metadata":
+                intent_metrics["correct_metadata"] += 1
+        else:
+            if outcome == "success":
+                intent_metrics["false_rejection"] += 1
         if errors:
             failures_by_dataset[dataset_id] += 1
             print(f"FAIL {case['name']}: " + "; ".join(errors))
@@ -129,6 +161,14 @@ def main():
     for dataset_id in counts:
         print(f"{dataset_id}: {counts[dataset_id] - failures_by_dataset[dataset_id]}/{counts[dataset_id]} passed | {failures_by_dataset[dataset_id]} failed")
     print(f"Total cases: {len(cases)} | Passed: {total_passed} | Failed: {total_failed} | Status: {'PASS' if total_failed == 0 else 'FAIL'}")
+    print("\nIntent Gate Metrics (Phase 7):")
+    print(f"  Correct answerable classifications:  {intent_metrics['correct_answerable']}")
+    print(f"  Correct ambiguity detections:        {intent_metrics['correct_ambiguous']}")
+    print(f"  Correct unsupported detections:      {intent_metrics['correct_unsupported']}")
+    print(f"  Correct metadata answers:            {intent_metrics['correct_metadata']}")
+    print(f"  False rejections (valid -> failed):  {intent_metrics['false_rejection']}")
+    print(f"  End-to-end expected-result matches:   {intent_metrics['end_to_end_correct']}/{len(cases)}")
+    print(f"  Unsafe execution attempts:            {intent_metrics['unsafe_execution_attempts']}")
     return 1 if total_failed else 0
 
 

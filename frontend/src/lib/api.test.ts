@@ -29,6 +29,25 @@ describe('DataMind API client', () => {
     expect(fetchMock.mock.calls[0][0]).toContain('/api/datasets');
   });
 
+  it('explains a missing catalog endpoint instead of a generic unavailable message', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false, status: 404, json: async () => ({ detail: 'Not Found' }),
+    }));
+    await expect(getDatasetCatalog()).rejects.toMatchObject({
+      name: 'ApiError',
+      status: 404,
+      message: expect.stringContaining('older DataMind API'),
+    });
+  });
+
+  it('explains a catalog network failure with the API URL', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')));
+    await expect(getDatasetCatalog()).rejects.toMatchObject({
+      name: 'ApiError',
+      message: expect.stringContaining('/api/datasets'),
+    });
+  });
+
   it('uses a safe backend error message and refuses blank input', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: false, status: 422, json: async () => ({ detail: 'Invalid query request.' }),

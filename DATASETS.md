@@ -37,6 +37,48 @@ tested.
 
 ## Electricity Generation and Energy Mix (`electricity_mix`)
 
+### Snowflake query target
+
+Application queries use the preloaded Snowflake table
+`DATAMIND_DB.ANALYTICS.ELECTRICITY_MIX`. The trusted registry fixes this table,
+database, schema, columns, and supported operations. Every electricity query
+requires the configured Snowflake credentials, warehouse, and a role with
+`USAGE` on the database/schema/warehouse and `SELECT` on the target table. A
+connection or permission failure is returned as a Snowflake failure; DataMind
+does not fall back to SQLite or query the CSV.
+
+The required connection variables are `SNOWFLAKE_ACCOUNT`, `SNOWFLAKE_USER`,
+`SNOWFLAKE_PASSWORD`, and `SNOWFLAKE_WAREHOUSE`; see `.env.example`. Database,
+schema, and table names are fixed in code and are not accepted from the model or
+client request. `tpch_customer` remains the default dataset when `dataset_id`
+is omitted.
+
+Expected table mapping:
+
+| Snowflake column | Type | Source CSV column | Meaning |
+|---|---|---|---|
+| `ENTITY` | VARCHAR | `entity` | Country or territory |
+| `CODE` | VARCHAR | `code` | ISO alpha-3 code |
+| `YEAR` | INTEGER | `year` | Calendar year |
+| `RENEWABLES_TWH` | FLOAT/NUMBER | `renewables_twh` | Combined renewable electricity generation, TWh |
+
+The project expects this table to be loaded before the app is used; it does
+not create, upload, or refresh the table automatically. To verify a deployment
+in Snowsight, run these read-only checks using the configured role:
+
+```sql
+DESC TABLE DATAMIND_DB.ANALYTICS.ELECTRICITY_MIX;
+SELECT COUNT(*) FROM DATAMIND_DB.ANALYTICS.ELECTRICITY_MIX;
+SELECT ENTITY, CODE, YEAR, RENEWABLES_TWH
+FROM DATAMIND_DB.ANALYTICS.ELECTRICITY_MIX
+WHERE ENTITY = 'India' AND YEAR = 2024;
+```
+
+The final query should return `403.39` TWh for the bundled source version.
+DataMind's API also supports this live check by selecting Electricity and
+asking “What was renewable electricity generation in India in 2024?”; record
+the returned Snowflake query ID and confirm the evidence fields in Trust Mode.
+
 - Explorer: <https://ourworldindata.org/grapher/electricity-mix>
 - OWID energy-data repository: <https://github.com/owid/energy-data>
 - OWID technical documentation: <https://docs.owid.io/projects/etl/>
@@ -48,4 +90,4 @@ tested.
 - The process is reproducible from the full-data CSV: keep rows with a three-letter alphabetic `Code` and `Year >= 2000`, preserve the measure unchanged, then sort by entity and year. No application-start or per-query download occurs.
 - OWID states its own produced data, visualizations and code are CC BY 4.0 with attribution. OWID also states that third-party data remains under original provider terms. Therefore redistribution of the combined source may depend on those underlying terms; see the [chart reuse and source notes](https://ourworldindata.org/grapher/electricity-mix) and verify provider-specific conditions before reuse beyond this educational subset. Attribution: “Ember (2026); Energy Institute – Statistical Review of World Energy (2026); Pinto et al. (2023); UK Department for Energy Security and Net Zero (2023), with major processing by Our World in Data.”
 - Missingness: blank numeric cells are loaded as SQL `NULL`; they are not converted to zero. This subset currently has no blank `renewables_twh` values. Missing country-year rows remain absent and are not imputed.
-- Queries run against an ephemeral, read-only SQLite database created from the bundled CSV. This dataset does not return a Snowflake query ID.
+- The bundled CSV remains in the repository as the compact, reproducible source subset used to prepare and independently evaluate the uploaded Snowflake table. Queries run against Snowflake and return its query ID when available; the application never executes against SQLite or silently falls back to the CSV.

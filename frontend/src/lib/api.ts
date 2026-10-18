@@ -46,9 +46,33 @@ export async function submitQuestion(question: string, datasetId = 'tpch_custome
 }
 
 export async function getDatasetCatalog(): Promise<DatasetCatalogResponse> {
-  const response = await fetch(`${API_BASE}/api/datasets`);
-  if (!response.ok) throw new ApiError('The DataMind dataset catalog is unavailable.', response.status);
-  return await response.json() as DatasetCatalogResponse;
+  const url = `${API_BASE}/api/datasets`;
+  try {
+    const response = await fetch(url);
+    if (!response.ok) {
+      let detail = '';
+      try {
+        const body = await response.json() as { detail?: unknown };
+        if (typeof body.detail === 'string') detail = body.detail;
+      } catch {
+        // Keep a status-based message when the server did not return JSON.
+      }
+      if (response.status === 404) {
+        throw new ApiError(
+          `Dataset catalog was not found at ${url}. The frontend is calling an older DataMind API. Start the current API on port 8000, or set VITE_DATAMIND_API_URL to the running API and restart Vite.`,
+          response.status,
+        );
+      }
+      throw new ApiError(
+        detail || `Dataset catalog request failed with HTTP ${response.status} at ${url}.`,
+        response.status,
+      );
+    }
+    return await response.json() as DatasetCatalogResponse;
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
+    throw new ApiError(`Cannot reach the dataset catalog at ${url}. Start the current DataMind API on port 8000 and retry.`);
+  }
 }
 
 export async function checkApiProcess(): Promise<boolean> {
