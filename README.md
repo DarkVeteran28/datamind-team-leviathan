@@ -24,20 +24,22 @@ Required environment variables are `SNOWFLAKE_ACCOUNT`, `SNOWFLAKE_USER`, `SNOWF
 - `src/datamind/pipeline.py`: `ask(question)` orchestration, greetings/capabilities, ambiguity clarification, evidence-based answer, and failure reporting.
 - `datamind_demo.py`: interactive terminal interface.
 
-`ask(question)` returns a dictionary with `answer`, `sql`, `columns`, `rows`, `query_id`, `assumptions`, `warnings`, and `row_count`. Greetings, identity questions, and detected ambiguous questions return without contacting Snowflake. For database errors the validated SQL remains available, while the result and query ID remain empty and the answer reports failure.
+`ask(question)` always returns the same fields: `answer`, `sql`, `columns`, `rows`, `query_id`, `assumptions`, `warnings`, and `row_count`. The answer text is composed from Snowflake-returned columns and row values (or states that the successful query returned no rows); it does not ask the LLM to narrate results. Multi-row answers show up to three returned rows, and the complete result remains in `rows`. SQL and query ID are kept as evidence. Failed SQL generation/validation and failed database execution return warnings and do not claim a successful query. Greetings, identity questions, and detected ambiguous questions return without contacting Snowflake.
 
 ## Tests
 
-Run `pytest -q tests`. Unit tests mock the model and Snowflake calls, so they need no credentials or network access. The standalone `snowflake_test.py` is a live connection diagnostic and is not part of the automated unit suite.
+Run `pytest -q tests`. Unit tests mock the model and Snowflake calls, so they need no credentials or network access. Run the deterministic example evaluation with `python eval/run_evaluation.py`; it prints case-by-case pass/fail for the checked-in mocked examples. These checks measure expected behavior on fixtures, not model accuracy or live Snowflake correctness. The standalone `snowflake_test.py` is a live connection diagnostic and is not part of the automated unit suite.
 
 ## Reproducible demo flow
 
 1. Start Ollama and confirm the configured model is available (`ollama list`).
 2. Configure the four Snowflake environment variables for an account that can read the sample CUSTOMER table.
 3. Run `python datamind_demo.py`.
-4. Try `hello` (no query), `Who are the best customers?` (clarification), then `Show 5 customers in the BUILDING segment` (validated query and actual results).
+4. Try `hello` (no query); `Who are the best customers?` (clarification); `How many customers are in the BUILDING segment?` (aggregate with a segment filter); and `Show five customers in the BUILDING segment` (filtered rows).
 5. Record the displayed SQL and Snowflake query ID; enter `exit` to finish.
+
+The checked-in evaluation examples in `eval/cases.json` include representative returned rows, a `COUNT(*)` aggregate, a segment filter, ambiguity, rejected SQL, an empty result, model/database failures, and a greeting. The results in this fixture are deliberately mocked and must not be mistaken for live CUSTOMER table values.
 
 ## Limitations
 
-This milestone supports only a conservative subset of SELECT against the one configured table and four columns. Joins, subqueries, window functions, wildcard selection, arbitrary functions, and additional tables/columns are rejected. Ambiguity detection is intentionally basic and cannot cover every natural-language phrasing. `LIMIT 100` bounds returned rows, not the amount of work a Snowflake query may perform; a 30-second Snowflake statement timeout is configured. A live demo requires working local Ollama and Snowflake credentials.
+This milestone supports only a conservative subset of SELECT against the one configured table and four columns. Joins, subqueries, window functions, wildcard selection, arbitrary functions, and additional tables/columns are rejected. Ambiguity detection is rule-based and cannot cover every natural-language phrasing; review generated SQL and assumptions where user intent is important. The deterministic evaluation does not measure real model accuracy. `LIMIT 100` bounds returned rows, not the amount of work a Snowflake query may perform; a 30-second Snowflake statement timeout is configured. A live demo requires working local Ollama and Snowflake credentials.

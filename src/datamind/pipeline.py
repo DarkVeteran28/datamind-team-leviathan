@@ -24,9 +24,21 @@ def _answer(columns, rows):
     if count == 0:
         return "The query completed successfully and returned no rows."
     if count == 1:
-        evidence = ", ".join(f"{name}={value if value is not None else 'NULL'}" for name, value in zip(columns, rows[0]))
-        return f"The query returned 1 row: {evidence}."
-    return f"The query returned {count} rows. The result table below contains the Snowflake values."
+        evidence = ", ".join(
+            f"{name}={value if value is not None else 'NULL'}"
+            for name, value in zip(columns, rows[0])
+        )
+        return f"Snowflake returned 1 row: {evidence}."
+    shown = min(count, 3)
+    samples = []
+    for row in rows[:shown]:
+        samples.append(", ".join(
+            f"{name}={value if value is not None else 'NULL'}"
+            for name, value in zip(columns, row)
+        ))
+    details = "; ".join(samples)
+    suffix = f" Showing {shown} of {count} rows; see rows for the complete result." if count > shown else ""
+    return f"Snowflake returned {count} rows: {details}.{suffix}"
 
 
 def ask(question):
@@ -49,7 +61,10 @@ def ask(question):
         return base
     try:
         generated = llm.generate_sql(question)
-        base["assumptions"] = generated.get("assumptions", [])
+        assumptions = generated.get("assumptions", [])
+        if isinstance(assumptions, str):
+            assumptions = [assumptions]
+        base["assumptions"] = [str(item) for item in assumptions] if isinstance(assumptions, list) else []
         base["sql"] = generated.get("sql")
         base["sql"] = validate_sql(base["sql"])
     except Exception as exc:

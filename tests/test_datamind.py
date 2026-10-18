@@ -3,7 +3,9 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
+ROOT = Path(__file__).parents[1]
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "src"))
 from datamind import pipeline
 from datamind.validator import validate_sql
 
@@ -65,3 +67,36 @@ def test_database_failure_preserves_sql_and_does_not_claim_success(monkeypatch):
     assert result["sql"] and result["query_id"] is None
     assert "failed" in result["answer"]
     assert result["row_count"] == 0
+
+
+@pytest.mark.parametrize(("question", "sql", "columns", "rows", "evidence"), [
+    ("How many customers are there?", "SELECT COUNT(*) AS CUSTOMER_COUNT FROM CUSTOMER",
+     ["CUSTOMER_COUNT"], [(25,)], "CUSTOMER_COUNT=25"),
+    ("Show a customer in BUILDING", "SELECT C_CUSTKEY, C_MKTSEGMENT FROM CUSTOMER WHERE C_MKTSEGMENT = 'BUILDING' LIMIT 1",
+     ["C_CUSTKEY", "C_MKTSEGMENT"], [(7, "BUILDING")], "C_MKTSEGMENT=BUILDING"),
+])
+def test_aggregation_and_filter_answers_use_returned_values(monkeypatch, question, sql, columns, rows, evidence):
+    monkeypatch.setattr(pipeline.llm, "generate_sql", lambda _: {"sql": sql})
+    monkeypatch.setattr(pipeline.snowflake_client, "execute_sql", lambda _: (columns, rows, "qid-evidence"))
+    result = pipeline.ask(question)
+    assert evidence in result["answer"]
+    assert result["rows"] == [list(row) for row in rows]
+    assert result["query_id"] == "qid-evidence"
+
+
+def test_empty_result_is_reported_without_invented_values(monkeypatch):
+    monkeypatch.setattr(pipeline.llm, "generate_sql", lambda _: {"sql": "SELECT C_CUSTKEY FROM CUSTOMER WHERE C_CUSTKEY = -1"})
+    monkeypatch.setattr(pipeline.snowflake_client, "execute_sql", lambda _: (["C_CUSTKEY"], [], "qid-empty"))
+    result = pipeline.ask("Find this customer key")
+    assert result["answer"] == "The query completed successfully and returned no rows."
+    assert result["rows"] == []
+    assert result["row_count"] == 0
+
+
+def test_mocked_evaluation_corpus():
+    from eval.run_evaluation import run_case
+    import json
+    from pathlib import Path
+
+    cases = json.loads((Path(__file__).parents[1] / "eval" / "cases.json").read_text())
+    assert all(not run_case(case) for case in cases)
