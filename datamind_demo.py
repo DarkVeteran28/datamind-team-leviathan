@@ -56,13 +56,19 @@ def generate_sql(question):
     return json.loads(result["message"]["content"])
 
 
-def validate_sql(sql):
-    # Permit a single trailing semicolon, but no multiple statements.
-    sql = sql.strip()
-    sql = re.sub(r";\s*$", "", sql)
 
-    if not sql:
+def validate_sql(sql):
+    """Validate a conservative, single-table Snowflake SELECT query."""
+    if not isinstance(sql, str) or not sql.strip():
         raise ValueError("Gemma returned empty SQL.")
+
+    # Remove at most one optional trailing semicolon.
+    sql = sql.strip()
+    if sql.endswith(";"):
+        sql = sql[:-1].rstrip()
+
+    if not sql or ";" in sql:
+        raise ValueError("Only one SQL statement is permitted.")
 
     statements = sqlglot.parse(sql, read="snowflake")
     if len(statements) != 1 or statements[0] is None:
@@ -73,48 +79,108 @@ def validate_sql(sql):
     if not isinstance(tree, exp.Select):
         raise ValueError("Only SELECT queries are allowed.")
 
-    tables = list(tree.find_all(exp.Table))
-    if not tables:
-        raise ValueError("Query must reference the approved table.")
+    # Reject complex query structures until explicitly supported.
+    forbidden_types = (
+        exp.Subquery,
+        exp.Union,
+        exp.Intersect,
+        exp.Except,
+        exp.Join,
+        exp.With,
+        exp.Window,
+    )
 
-    for table in tables:
-        if (
-            table.name.upper() != "CUSTOMER"
-            or (table.db and table.db.upper() != "TPCH_SF1")
-            or (
-                table.catalog
-                and table.catalog.upper() != "SNOWFLAKE_SAMPLE_DATA"
+    for kind in forbidden_types:
+        if next(tree.find_all(kind), None) is not None:
+            raise ValueError(
+                f"Unsupported SQL structure: {kind.__name__}"
             )
-        ):
-            raise ValueError("Query references an unapproved table.")
 
+    # Only one approved source table is permitted.
+    tables = list(tree.find_all(exp.Table))
+    if len(tables) != 1:
+        raise ValueError(
+            "Query must reference only the approved CUSTOMER table."
+        )
+
+    table = tables[0]
+
+    if (
+        table.name.upper() != "CUSTOMER"
+        or (table.db and table.db.upper() != "TPCH_SF1")
+        or (
+            table.catalog
+            and table.catalog.upper() != "SNOWFLAKE_SAMPLE_DATA"
+        )
+    ):
+        raise ValueError("Query references an unapproved table.")
+
+    # Prevent unexpected clauses and query features.
+    allowed_args = {
+        "expressions",
+        "from_",
+        "where",
+        "group",
+        "having",
+        "order",
+        "limit",
+        "offset",
+        "distinct",
+    }
+
+    for arg_name, arg_value in tree.args.items():
+        if arg_value is not None and arg_name not in allowed_args:
+            raise ValueError(
+                f"Unsupported SELECT clause: {arg_name}"
+            )
+
+    # Reject SELECT * but allow COUNT(*).
+    for star in tree.find_all(exp.Star):
+        parent = star.parent
+        if not isinstance(parent, exp.Count):
+            raise ValueError(
+                "Wildcard selection is not allowed. "
+                "Select approved columns explicitly."
+            )
+
+    # Permit only the four approved columns.
     for column in tree.find_all(exp.Column):
-        if column.name != "*" and column.name.upper() not in ALLOWED_COLUMNS:
+        if column.name == "*":
+            continue
+
+        if column.name.upper() not in ALLOWED_COLUMNS:
             raise ValueError(f"Unapproved column: {column.name}")
 
-    if any(
-            next(tree.find_all(kind), None) is not None
-            for kind in (exp.Subquery, exp.Union)
-        ):
+    # Restrict function calls to common aggregates.
+    allowed_aggregates = {"COUNT", "SUM", "AVG", "MIN", "MAX"}
+
+    for func in tree.find_all(exp.Func):
+        if func.sql_name().upper() not in allowed_aggregates:
             raise ValueError(
-                "Nested queries and UNION are not supported yet."
+                f"Unsupported SQL function: {func.sql_name()}"
             )
 
-    # Apply a maximum row limit.
+    # Add or cap the LIMIT.
     limit = tree.args.get("limit")
+
     if limit is None:
         tree = tree.limit(100)
     else:
         value = limit.expression
+
         if not isinstance(value, exp.Literal) or not value.is_int:
-            raise ValueError("LIMIT must be a positive integer literal.")
+            raise ValueError("LIMIT must be an integer literal.")
+
         count = int(value.this)
+
         if count < 1:
             raise ValueError("LIMIT must be positive.")
+
         if count > 100:
             tree = tree.limit(100)
 
     return tree.sql(dialect="snowflake")
+
 
 
 def execute_sql(sql):
