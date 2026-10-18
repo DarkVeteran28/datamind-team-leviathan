@@ -133,67 +133,19 @@ Electricity queries require access to `DATAMIND_DB.ANALYTICS.ELECTRICITY_MIX` th
 
 ## 🏆 Use of Sponsored Technologies
 
-This section describes how the two sponsored technologies — **Snowflake** and **Gemma 3** — are concretely used in the DataMind implementation.
+DataMind uses **Snowflake** as its cloud data warehouse and SQL execution layer for structured analytics. The `tpch_customer` dataset queries the Snowflake sample table `SNOWFLAKE_SAMPLE_DATA.TPCH_SF1.CUSTOMER`; `electricity_mix` queries `DATAMIND_DB.ANALYTICS.ELECTRICITY_MIX`.
 
 ### Snowflake
 
-Snowflake is the cloud data warehouse and SQL execution layer for all structured data analytics in DataMind. Both registered datasets are stored as Snowflake tables and every data-backed answer executes a validated SQL statement against the appropriate table.
-
-| Detail | Value |
-|---|---|
-| TPC-H customer table | `SNOWFLAKE_SAMPLE_DATA.TPCH_SF1.CUSTOMER` |
-| Electricity generation table | `DATAMIND_DB.ANALYTICS.ELECTRICITY_MIX` |
-| Execution client | `src/datamind/snowflake_client.py` |
-| Statement timeout | 30 seconds, set per-session with `ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = 30` |
-| Query tag | `datamind_hackathon`, set per-session with `ALTER SESSION SET QUERY_TAG` |
-| Result evidence | Snowflake query ID returned with every successful answer; verifiable in Snowsight → *Monitoring → Query History* |
-
-**How Snowflake is reached.** `pipeline.ask()` routes both `tpch_customer` and `electricity_mix` requests through `snowflake_client.execute_sql()`. The client reads `SNOWFLAKE_ACCOUNT`, `SNOWFLAKE_USER`, `SNOWFLAKE_PASSWORD`, and `SNOWFLAKE_WAREHOUSE` from environment variables at connection time. The target database and schema are taken from the dataset registry — `SNOWFLAKE_SAMPLE_DATA` / `TPCH_SF1` for the customer dataset and `DATAMIND_DB` / `ANALYTICS` for the electricity dataset — and are never derived from user input.
-
-**Credential hygiene.** All four Snowflake credentials are supplied through environment variables and must never be hardcoded or committed. `.env` is git-ignored; only `.env.example` with safe placeholder values is committed to the repository.
-
-**Full execution flow for a data question.**
-
-1. `pipeline.ask()` validates the intent gate, calls `llm.generate_plan()` (or the deterministic rule), and validates the typed plan.
-2. `semantic_query.compile_query_plan()` produces a parameterised SQL statement; user-supplied filter values are bound separately, never interpolated into the SQL string.
-3. `validator.validate_sql_with_evidence()` parses and checks the compiled SQL with SQLGlot before any network call is made.
-4. `snowflake_client.execute_sql()` opens a Snowflake connection, sets the session timeout and query tag, and executes the statement.
-5. Returned columns, rows, and the Snowflake query ID are passed back to the pipeline and included in the response.
+`src/datamind/pipeline.py` routes the selected dataset to `src/datamind/snowflake_client.py`. The client reads `SNOWFLAKE_ACCOUNT`, `SNOWFLAKE_USER`, `SNOWFLAKE_PASSWORD`, and `SNOWFLAKE_WAREHOUSE` from environment variables; credentials must never be hardcoded or committed. DataMind validates the query plan, compiles parameterized SQL, applies SQL safety checks, then executes it against the registered table. Returned rows and the Snowflake query ID are included as evidence in the interface.
 
 ### Gemma 3
 
-Gemma 3 4B is the language model used to interpret natural-language questions and propose structured query plans for the analytics pipeline. It runs locally through Ollama and is never given direct access to the database or to query results.
-
-| Detail | Value |
-|---|---|
-| Model | `gemma3:4b` (default); configurable via `DATAMIND_MODEL` |
-| Runtime | Local Ollama instance; default endpoint `http://localhost:11434/api/chat`, configurable via `OLLAMA_URL` |
-| Inference module | `src/datamind/llm.py` — `generate_plan(question, dataset_id)` |
-| Output format | Structured JSON constrained to the `QueryPlan` schema via Ollama's `format` parameter |
-| Temperature | `0` (deterministic decoding) |
-| Request timeout | 120 seconds |
-
-**What Gemma 3 does.** `llm.generate_plan()` sends the user's question to the locally running Gemma 3 4B model via the Ollama chat API. The system prompt describes the selected dataset's field catalog and the versioned `QueryPlan` JSON schema. Gemma returns a single JSON object specifying dimensions, metrics, filters, sort order, limit, and any assumptions it made — never executable SQL.
-
-**What Gemma 3 does not do.** Gemma does not execute SQL, access Snowflake, or determine whether a result is correct. It cannot introduce arbitrary table names, columns, or SQL constructs: those are validated against a fixed allowlist in `semantic_query.validate_query_plan()` and `validator.validate_sql_with_evidence()` before any database call is made. If Gemma returns a plan that names an unregistered field, uses an unsupported operation, or produces a malformed schema, the plan is rejected and no query executes.
-
-**Deterministic override.** For a narrow class of explicit country-ranking questions on the electricity dataset, `pipeline._deterministic_electricity_ranking()` constructs a typed plan directly without calling the model. The `plan_source` field in the response records whether the plan came from `ollama` or `deterministic_rule`.
+Gemma 3 4B (`gemma3:4b`) runs locally through Ollama. `src/datamind/llm.py` uses `DATAMIND_MODEL` and `OLLAMA_URL` to ask it to interpret a natural-language question and propose a structured JSON `QueryPlan`. The plan is checked by deterministic schema and semantic validation, compiled by trusted Python, and checked by the SQL safety validator before execution. Gemma does not produce executable SQL, access Snowflake, or independently determine whether returned results are correct. A narrow deterministic rule handles explicit electricity country rankings without calling Gemma.
 
 ### End-to-end workflow
 
-```
-User question
-  → Semantic intent gate (deterministic dataset-capability check)
-  → Gemma 3 4B via Ollama  →  structured JSON query plan
-  → Typed plan validation (schema, field allowlist, semantic rules)
-  → Deterministic SQL compilation (parameterised, no user-input interpolation)
-  → SQLGlot safety validation (single SELECT, table/column/function allowlists, 100-row cap)
-  → Snowflake execution (SNOWFLAKE_SAMPLE_DATA.TPCH_SF1.CUSTOMER
-                      or DATAMIND_DB.ANALYTICS.ELECTRICITY_MIX)
-  → Results, query ID, and evidence in the DataMind interface
-```
-
-The answer text is composed directly from the returned column names and row values. The language model does not narrate results and does not see the rows Snowflake returns.
+**User question → semantic intent gate → Gemma 3 via Ollama (or the deterministic ranking rule) → structured query plan → typed-plan validation and SQL compilation → SQL safety validation → Snowflake execution → returned results and evidence in the DataMind interface.** Answer text is composed from the returned columns and rows; the model does not see query results.
 
 ---
 
