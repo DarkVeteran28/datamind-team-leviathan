@@ -9,6 +9,7 @@
 ---
 
 [README.md](https://github.com/user-attachments/files/33623777/README.md)<div align="center">
+<div align="center">
 
 # 🐉 DataMind: Talk to Your Data
 
@@ -23,7 +24,7 @@
 ![Inference](https://img.shields.io/badge/inference-local%20Ollama-black)
 ![Tests](https://img.shields.io/badge/tests-pytest-green)
 
-[Overview](#-overview) · [Architecture](#-architecture) · [Quick start](#-quick-start) · [Safety](#-safety-model) · [Testing](#-testing-and-evaluation) · [Limitations](#-limitations)
+[Overview](#-overview) · [Datasets](#-supported-datasets) · [Sponsored technologies](#-use-of-sponsored-technologies) · [Architecture](#-architecture) · [Quick start](#-quick-start) · [Safety](#-safety-model) · [Testing](#-testing-and-evaluation) · [Limitations](#-limitations)
 
 </div>
 
@@ -36,28 +37,25 @@ Organizations hold large amounts of information in databases, but getting a usef
 **DataMind** is a natural-language interface to two explicitly registered datasets:
 
 1. You ask a question in everyday language.
-2. **Gemma 3 4B**, running locally through **Ollama**, proposes a typed query plan. A narrow, deterministic plan rule handles explicit country rankings by renewable generation; its source is shown in the response evidence.
+2. The semantic intent gate checks the selected dataset's capabilities. For answerable questions, **Gemma 3 4B**, running locally through **Ollama**, usually proposes a typed query plan. A narrow deterministic rule handles explicit electricity country rankings without calling Gemma; the plan source is shown in response evidence.
 3. Trusted Python validates the plan for the selected catalog, compiles deterministic SQL, and binds filter values; the **SQLGlot validator** checks the compiled SQL.
 4. `tpch_customer` routes to Snowflake TPC-H CUSTOMER; `electricity_mix` routes to `DATAMIND_DB.ANALYTICS.ELECTRICITY_MIX`. TPC-H remains the default when no dataset is selected.
-5. The answer is composed **directly from returned rows**. Both datasets return Snowflake query IDs when Snowflake supplies one.
+5. Successful query answers are composed **directly from returned rows** and include a Snowflake query ID when Snowflake supplies one.
 
-> **Design principle: Gemma interprets, trusted Python compiles, the validator decides, the selected engine computes.**
-> The model returns no executable SQL and never narrates results, so it cannot inject SQL identifiers or invent answer values.
+> **Design principle: Gemma proposes a plan, trusted Python validates and compiles it, the SQL validator enforces policy, and Snowflake computes the result.**
+> Gemma does not return executable SQL or narrate results. Its plan is constrained to registered fields and operations before a query can execute.
 
-### What every answer contains
+### Response evidence
 
 | Output | Meaning |
 |---|---|
-| `answer` | Plain-language answer built from returned column names and row values |
-| `sql` | Deterministically compiled SQL with bind placeholders |
-| `sql_parameters` | Filter values bound separately to the selected database engine |
-| `query_plan`, `plan_validation` | Typed intent proposal and the checks that accepted or rejected it |
-| `plan_source` | `ollama`, `deterministic_rule`, or `not_run` |
-| `columns`, `rows`, `row_count` | The complete result set |
-| `query_id` | Snowflake query ID, when returned by the connector |
-| `dataset_id` | Dataset selected and used for the request |
-| `assumptions` | Interpretations the model made |
-| `warnings` | Failures, rejections or anything the user should know |
+| `answer`, `outcome` | Result, clarification, metadata response, rejection, or failure |
+| `dataset_id`, `intent_classification`, `capability_match` | Selected dataset and pre-planning intent/capability evidence |
+| `query_plan`, `plan_validation`, `plan_source` | Typed plan and its validation, when planning ran |
+| `sql`, `sql_parameters`, `validation` | Compiled parameterized SQL and SQL-policy evidence, when compilation ran |
+| `columns`, `rows`, `row_count`, `query_id` | Returned results and Snowflake query ID, when execution returned them |
+| `execution`, `verification` | Execution status and deterministic result-consistency checks; neither asserts semantic correctness |
+| `assumptions`, `warnings`, `clarification`, `missing_concepts` | Planning assumptions, notices, requested clarification, or unsupported requirements |
 
 ### Example questions
 
@@ -71,6 +69,15 @@ Rank countries by renewable electricity generation for 2025, highest first.
 
 Electricity questions are limited to combined renewable generation in terawatt-hours. The bundled view has no individual solar/wind breakdown, renewable share, or per-capita measure.
 
+### Supported datasets
+
+| Dataset ID | Snowflake table | Contents and supported scope |
+|---|---|---|
+| `tpch_customer` (default) | `SNOWFLAKE_SAMPLE_DATA.TPCH_SF1.CUSTOMER` | Snowflake's TPC-H sample customer records. Registered fields: `C_CUSTKEY`, `C_NAME`, `C_ACCTBAL` (USD), and `C_MKTSEGMENT`. It contains customer/account data, not sales, products, orders, transaction dates, or revenue. |
+| `electricity_mix` | `DATAMIND_DB.ANALYTICS.ELECTRICITY_MIX` | Our World in Data's annual combined renewable electricity generation for ISO-coded countries and territories, 2000–2025. Fields: `ENTITY`, `CODE`, `YEAR`, and `RENEWABLES_TWH` (TWh). The bundled snapshot has 5,387 rows across 214 entities. |
+
+Both datasets execute through Snowflake. The project does not create or refresh the electricity table automatically; `data/electricity_mix.csv` is retained as the reproducible source subset, not used as a query fallback. Electricity data is combined renewable generation, not a share, per-capita value, total generation, or individual fuel series. Missing country-year observations are not treated as zero. For the [OWID source](https://ourworldindata.org/grapher/electricity-mix), column mapping, loading notes, and attribution, see [`DATASETS.md`](DATASETS.md).
+
 ---
 
 ## ✅ Requirement checklist
@@ -79,13 +86,13 @@ Electricity questions are limited to combined renewable generation in terawatt-h
 
 | ID | Requirement | How DataMind meets it |
 |---|---|---|
-| M1 | Everyday-language questions | Natural-language input handled by Gemma 3 4B |
-| M2 | Answers from real querying at question time | Each data answer queries the selected Snowflake table |
+| M1 | Everyday-language questions | Intent gate and Gemma 3 4B interpret questions; a deterministic rule handles a narrow electricity-ranking case |
+| M2 | Answers from real querying at question time | Successful data queries execute against the selected Snowflake table |
 | M3 | Grounded answers, no unsupported model claims | Answer text is composed from returned rows; the LLM does not narrate results |
 | M4 | Plain-language explanation of how the answer was obtained | Answer, assumptions and warnings returned with every response |
-| M5 | Inspectable evidence | Selected dataset, SQL, returned rows; Snowflake query ID when using Snowflake |
+| M5 | Inspectable evidence | Selected dataset and, when a query runs, SQL, returned rows and Snowflake query ID |
 | M6 | Handling of ambiguity, empty results, unsupported requests | See [Behaviour on hard cases](#-behaviour-on-hard-cases) |
-| M7 | Meaningful Snowflake and Gemma integration | See [Technology usage](#-how-the-required-technologies-are-used) |
+| M7 | Meaningful Snowflake and Gemma integration | See [Use of Sponsored Technologies](#-use-of-sponsored-technologies) |
 | M8 | Working, reproducible, open source | This repository, MIT licensed, with setup and tests |
 
 ### Compliance gates
@@ -103,34 +110,6 @@ Electricity questions are limited to combined renewable generation in terawatt-h
 
 ---
 
-## 🧩 How the required technologies are used
-
-### Snowflake
-
-| Aspect | Implementation |
-|---|---|
-| Role | Executes approved queries for both registered datasets |
-| Data | `SNOWFLAKE_SAMPLE_DATA.TPCH_SF1.CUSTOMER` and `DATAMIND_DB.ANALYTICS.ELECTRICITY_MIX` |
-| Client | `src/datamind/snowflake_client.py`: credential check, connection, **30-second statement timeout**, result retrieval |
-| Evidence | The **query ID** is returned with every successful answer |
-| Failure handling | Execution failures return a warning and never claim a successful query |
-
-Electricity queries require access to `DATAMIND_DB.ANALYTICS.ELECTRICITY_MIX` through the configured Snowflake account. The bundled `data/electricity_mix.csv` remains the reproducible source used to prepare and independently evaluate the uploaded table; it is not a query fallback.
-
-### Gemma
-
-| Aspect | Implementation |
-|---|---|
-| Model | **Gemma 3 4B** (`gemma3:4b`), configurable through `DATAMIND_MODEL` |
-| Runtime | Local **Ollama**, configurable through `OLLAMA_URL` (default `http://localhost:11434/api/chat`) |
-| Task | Translates a natural-language question into a versioned typed query plan returned as JSON, including its assumptions |
-| Output handling | `src/datamind/llm.py` parses the JSON response; unusable output is reported as a failure |
-| Not delegated to Gemma | SQL validation, query execution, row handling and answer composition |
-
-**Separation of concerns:** Gemma proposes intent only. Trusted Python validates the plan and compiles SQL; nothing from the model is executed as SQL.
-
----
-
 ## 🏆 Use of Sponsored Technologies
 
 DataMind uses **Snowflake** as its cloud data warehouse and SQL execution layer for structured analytics. The `tpch_customer` dataset queries the Snowflake sample table `SNOWFLAKE_SAMPLE_DATA.TPCH_SF1.CUSTOMER`; `electricity_mix` queries `DATAMIND_DB.ANALYTICS.ELECTRICITY_MIX`.
@@ -145,7 +124,7 @@ Gemma 3 4B (`gemma3:4b`) runs locally through Ollama. `src/datamind/llm.py` uses
 
 ### End-to-end workflow
 
-**User question → semantic intent gate → Gemma 3 via Ollama (or the deterministic ranking rule) → structured query plan → typed-plan validation and SQL compilation → SQL safety validation → Snowflake execution → returned results and evidence in the DataMind interface.** Answer text is composed from the returned columns and rows; the model does not see query results.
+For an answerable data question: **user question → semantic intent gate → Gemma 3 via Ollama (or the deterministic electricity-ranking rule) → structured query plan → typed-plan validation and SQL compilation → SQL safety validation → Snowflake execution → returned results and evidence in the DataMind interface.** Metadata questions are answered from the registry; unsupported or ambiguous questions stop before query execution. Answer text is composed from returned columns and rows; the model does not see query results.
 
 ---
 
@@ -153,9 +132,9 @@ Gemma 3 4B (`gemma3:4b`) runs locally through Ollama. `src/datamind/llm.py` uses
 
 ```mermaid
 flowchart TD
-    Q[User question] --> P{Greeting, identity<br/>or ambiguous?}
-    P -->|yes| R[Reply or ask for clarification<br/>no data query]
-    P -->|no| D{Explicit supported<br/>electricity ranking?}
+    Q[User question] --> G{Semantic intent<br/>and capability gate}
+    G -->|metadata, unsupported,<br/>ambiguous, greeting, identity| R[Answer or clarify<br/>without query]
+    G -->|answerable| D{Explicit supported<br/>electricity ranking?}
     D -->|yes| DP[Trusted deterministic<br/>typed-plan rule]
     D -->|no| L[Gemma 3 4B via Ollama<br/>proposes typed plan as JSON]
     DP --> T
@@ -179,14 +158,15 @@ flowchart TD
 
 | Path | Responsibility |
 |---|---|
-| `src/datamind/llm.py` | Ollama chat request and query-plan JSON parsing |
+| `src/datamind/intent_gate.py` | Dataset-aware intent classification, clarification, unsupported-request blocking, and metadata answers |
+| `src/datamind/llm.py` | Ollama chat request and structured query-plan JSON parsing |
 | `src/datamind/dataset_registry.py` | Dataset metadata, catalogs, default, provenance and availability |
 | `src/datamind/electricity_client.py` | CSV-backed entity-name matching for explicit-question-scope checks |
 | `src/datamind/semantic_query.py` | Strict plan schema, typed semantic checks, and deterministic parameterized SQL compiler |
 | `src/datamind/validator.py` | Dataset-specific single-`SELECT` parsing; table, column, function and clause restrictions; 100-row cap |
 | `src/datamind/snowflake_client.py` | Credential check, connection, 30 s statement timeout, result retrieval |
 | `src/datamind/pipeline.py` | `ask(question, dataset_id)` orchestration and explicit backend routing |
-| `src/datamind/api.py` | Local FastAPI adapter, `GET /api/datasets`, and backward-compatible default routing |
+| `src/datamind/api.py` | Local FastAPI adapter, `GET /api/datasets`, `POST /api/query`, and backward-compatible default routing |
 | `app/ui.py` | Streamlit interface showing answers, SQL, rows, query IDs, assumptions and warnings |
 | `frontend/` | React, TypeScript and Vite Trust Console; session-only query history |
 | `datamind_demo.py` | Interactive terminal interface |
@@ -194,7 +174,7 @@ flowchart TD
 | `snowflake_test.py` | Live Snowflake connection diagnostic |
 | `DATASETS.md` | Dataset sources and attribution |
 
-`ask(question, dataset_id="tpch_customer")` preserves `answer`, `sql`, `columns`, `rows`, `query_id`, `assumptions`, `warnings` and `row_count`, and includes `dataset_id`, `query_plan`, `plan_validation`, `sql_parameters` and `outcome`. SQL filter placeholders correspond positionally to `sql_parameters`. For multi-row results the answer text shows up to three rows, and the complete result remains in `rows`.
+`ask(question, dataset_id="tpch_customer")` keeps TPC-H as the default when `dataset_id` is omitted. Its response includes the selected dataset, intent/capability evidence, outcome, and stage evidence; query plan, SQL, rows, and query ID are populated only when those stages run and return them. SQL filter placeholders correspond positionally to `sql_parameters`. For multi-row results the answer text shows up to three rows, and the complete result remains in `rows`.
 
 ---
 
@@ -212,8 +192,8 @@ The model returns a declarative query plan, never executable SQL. Trusted code c
 | Parameter binding | User filter values are passed separately from the compiled statement |
 | Row cap | `LIMIT 100` is enforced |
 | Statement timeout | 30 seconds on Snowflake |
-| Pre-query routing | Greetings, identity questions and detected ambiguity return without contacting Snowflake |
-| Secret hygiene | Credentials are never printed by the CLI; `.env` is git-ignored |
+| Pre-query routing | Greetings, metadata questions, unsupported requests, and ambiguity return before SQL compilation or Snowflake execution |
+| Secret hygiene | `.env` is git-ignored; never share credential values or raw connector diagnostics |
 
 ---
 
@@ -223,11 +203,11 @@ The model returns a declarative query plan, never executable SQL. Trusted code c
 |---|---|:---:|
 | Greeting or "what can you do?" | Friendly capabilities reply | No |
 | Ambiguous question (e.g. "best customers") | Asks a clarifying question before querying | No |
+| Dataset metadata question | Answers from the trusted registry; no model planning or SQL | No |
+| Unsupported question or dataset mismatch | Names missing capability and blocks planning/execution | No |
 | Model returns an unusable plan | Rejected before SQL compilation; no query claimed | No |
-| Unsupported request | Explicit unsupported response before SQL compilation | No |
 | SQL fails validation (unknown column, join, `DROP`, …) | Rejected with a warning; **not executed** | No |
 | Snowflake error or timeout | Warning reported; success is never claimed; electricity is not redirected to local CSV | Yes, if execution begins |
-| Missing local CSV | Snowflake query routing remains unchanged; entity-name scope matching may be less specific | No |
 | Valid query, zero rows | States that the query succeeded and returned no rows | Yes |
 | Valid query, many rows | Answer shows up to three rows; full result stays in `rows` | Yes |
 
@@ -241,7 +221,7 @@ The model returns a declarative query plan, never executable SQL. Trusted code c
 |---|---|
 | Python | 3.10 or newer |
 | Ollama | Installed and running ([ollama.com](https://ollama.com)) |
-| Snowflake | Required for both datasets; the configured role must read TPC-H CUSTOMER and `DATAMIND_DB.ANALYTICS.ELECTRICITY_MIX` |
+| Snowflake | Required for both datasets; the configured role and warehouse must access TPC-H CUSTOMER and `DATAMIND_DB.ANALYTICS.ELECTRICITY_MIX` |
 | Memory and disk | Enough to run `gemma3:4b` locally (a download of a few GB) |
 
 ### Install
@@ -318,7 +298,7 @@ Frontend tests mock the API. The production build checks TypeScript and bundles 
 
 1. Start Ollama and confirm the model with `ollama list`.
 2. Set the four Snowflake variables for a role and warehouse that can read both registered tables. Confirm the electricity target table is loaded using the checks in [`DATASETS.md`](DATASETS.md).
-3. Run `streamlit run app/ui.py`.
+3. Start the API and React Trust Console using the commands in [Run](#run). The Streamlit interface is also available as a fallback with `streamlit run app/ui.py`.
 4. Select TPC-H and ask **"Show five customers with the highest account balances."** Note the SQL, rows and query ID.
 5. Select Electricity and ask **"What was renewable electricity generation in India in 2024?"** The Snowflake SQL, returned rows, and query ID appear.
 6. Try **"Rank countries by renewable electricity generation for 2025, highest first."** to see a bounded, data-backed ranking.
@@ -381,7 +361,7 @@ TPC-H is benchmark data, not real customer records. Electricity subset: ISO alph
 ## 🔐 Security and secrets
 
 - No keys, tokens or passwords are committed. `.env` is git-ignored and `.env.example` contains only safe placeholders.
-- Credentials are never printed by the CLI.
+- The interactive demo does not print configured credential values. The standalone `snowflake_test.py` may print connector error details; review diagnostic output before sharing it.
 - All generated SQL is validated before it reaches Snowflake.
 
 ---
@@ -392,6 +372,7 @@ We state these openly so you can judge the project on what it really does.
 
 - **Narrow scope.** Each dataset has a conservative `SELECT` catalog and a 100-row result limit. Joins, subqueries, window functions, wildcard selection, arbitrary functions, and unregistered tables or columns are rejected.
 - **Electricity measure scope.** Only combined renewable generation is bundled. It does not provide total generation, solar/wind breakdowns, renewable shares or per-capita measures. The compact snapshot ends in 2025 and is not refreshed automatically.
+- **Electricity scope matching.** The bundled CSV also supplies country names for checking explicit country constraints in a question. If that file is missing, this check may be less specific; the Snowflake query table remains the execution source.
 - **Bounded plan schema and rule-based ambiguity detection.** They cannot cover every natural-language phrasing. Review compiled SQL, bound values, and assumptions whenever intent matters.
 - **No model-accuracy benchmark.** The deterministic evaluation measures expected behaviour on fixtures, not real Gemma accuracy or live Snowflake correctness.
 - **Row cap is not a cost cap.** `LIMIT 100` bounds returned rows, not the work Snowflake performs. Both Snowflake routes use a 30-second statement timeout.
