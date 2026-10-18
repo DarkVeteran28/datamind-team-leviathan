@@ -119,7 +119,11 @@ def test_pipeline_returns_actual_rows_sql_and_query_id(monkeypatch):
     assert _check(result["validation"], "approved_columns")["status"] == "passed"
     assert _check(result["validation"], "row_limit")["detail"] == "LIMIT 2 is within the 100-row maximum."
     assert result["execution"]["status"] == "succeeded"
-    assert result["verification"] == {"status": "not_run", "checks": []}
+    assert result["verification"]["status"] == "passed"
+    assert _check(result["verification"], "returned_row_count")["status"] == "passed"
+    assert _check(result["verification"], "answer_row_count")["status"] == "passed"
+    assert _check(result["verification"], "displayed_samples")["status"] == "passed"
+    assert _check(result["verification"], "semantic_correctness")["status"] == "not_run"
 
 
 def test_invalid_generated_sql_is_not_executed_and_is_retained(monkeypatch):
@@ -145,7 +149,28 @@ def test_empty_result_is_success_without_fabricated_values(monkeypatch):
     assert result["query_id"] == "qid-empty"
     assert result["execution"]["status"] == "succeeded"
     assert result["validation"]["status"] == "passed"
-    assert result["verification"]["status"] == "not_run"
+    assert result["verification"]["status"] == "passed"
+    assert _check(result["verification"], "empty_result_description")["status"] == "passed"
+    assert _check(result["verification"], "displayed_samples")["status"] == "skipped"
+
+
+def test_verifier_detects_row_count_mismatch():
+    evidence = pipeline._verify_answer("Snowflake returned 2 rows: C_CUSTKEY=1.", ["C_CUSTKEY"], [[1]], 2)
+    assert evidence["status"] == "failed"
+    assert _check(evidence, "returned_row_count")["status"] == "failed"
+    assert _check(evidence, "answer_row_count")["status"] == "failed"
+
+
+def test_verifier_detects_sample_value_mismatch():
+    evidence = pipeline._verify_answer("Snowflake returned 1 row: C_CUSTKEY=999.", ["C_CUSTKEY"], [[1]], 1)
+    assert evidence["status"] == "failed"
+    assert _check(evidence, "displayed_samples")["status"] == "failed"
+
+
+def test_verifier_marks_unavailable_checks_honestly():
+    evidence = pipeline._verify_answer("Snowflake returned 1 row: C_CUSTKEY=1.", ["C_CUSTKEY"], [[1]], 1)
+    assert _check(evidence, "ranking_order")["status"] == "skipped"
+    assert _check(evidence, "semantic_correctness")["status"] == "not_run"
 
 
 def test_llm_failure_is_structured_and_does_not_call_snowflake(monkeypatch):

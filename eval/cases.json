@@ -6,7 +6,7 @@
     "columns": ["C_CUSTKEY", "C_NAME"],
     "rows": [[1, "Customer#000000001"], [2, "Customer#000000002"]],
     "query_id": "eval-rows-1",
-    "expected": {"outcome": "success", "row_count": 2, "answer_contains": ["Customer#000000001", "2 rows"], "sql_contains": ["LIMIT 2"], "model_calls": 1, "db_calls": 1}
+    "expected": {"outcome": "success", "row_count": 2, "answer_contains": ["Customer#000000001", "2 rows"], "sql_contains": ["LIMIT 2"], "model_calls": 1, "db_calls": 1, "verification_status": "passed", "validation_status": "passed", "execution_status": "succeeded", "query_id": "eval-rows-1", "validation_checks": {"single_statement": "passed", "approved_table": "passed", "approved_columns": "passed", "row_limit": "passed"}, "verification_checks": {"returned_row_count": "passed", "displayed_samples": "passed", "semantic_correctness": "not_run"}}
   },
   {
     "name": "aggregate count",
@@ -15,7 +15,7 @@
     "columns": ["CUSTOMER_COUNT"],
     "rows": [[25]],
     "query_id": "eval-aggregate-1",
-    "expected": {"outcome": "success", "row_count": 1, "answer_contains": ["CUSTOMER_COUNT=25"], "sql_contains": ["COUNT(*)", "LIMIT 100"], "model_calls": 1, "db_calls": 1}
+    "expected": {"outcome": "success", "row_count": 1, "answer_contains": ["CUSTOMER_COUNT=25"], "sql_contains": ["COUNT(*)", "LIMIT 100"], "model_calls": 1, "db_calls": 1, "verification_status": "passed"}
   },
   {
     "name": "segment filter",
@@ -24,18 +24,65 @@
     "columns": ["C_CUSTKEY", "C_MKTSEGMENT"],
     "rows": [[7, "BUILDING"]],
     "query_id": "eval-filter-1",
-    "expected": {"outcome": "success", "row_count": 1, "answer_contains": ["C_MKTSEGMENT=BUILDING"], "sql_contains": ["BUILDING"], "model_calls": 1, "db_calls": 1}
+    "expected": {"outcome": "success", "row_count": 1, "answer_contains": ["C_MKTSEGMENT=BUILDING"], "sql_contains": ["BUILDING"], "model_calls": 1, "db_calls": 1, "verification_status": "passed"}
   },
   {
     "name": "ambiguous ranking",
     "question": "Who are the best customers?",
-    "expected": {"outcome": "clarification", "row_count": 0, "answer_contains": ["define"], "model_calls": 0, "db_calls": 0}
+    "expected": {"outcome": "clarification", "row_count": 0, "answer_contains": ["define"], "model_calls": 0, "db_calls": 0, "verification_status": "not_run", "clarification_required": true}
+  },
+  {
+    "name": "ranking without metric in a segment",
+    "question": "Show me the top customers in the BUILDING segment",
+    "expected": {"outcome": "clarification", "row_count": 0, "answer_contains": ["account balance", "customer name", "customer key"], "model_calls": 0, "db_calls": 0}
+  },
+  {
+    "name": "ranking by unsupported spending frequency",
+    "question": "Show me the top customers by spending frequency",
+    "expected": {"outcome": "clarification", "row_count": 0, "answer_contains": ["account balance"], "model_calls": 0, "db_calls": 0}
+  },
+  {
+    "name": "clear account balance ranking",
+    "question": "Show me the top customers by account balance",
+    "model_sql": "SELECT C_CUSTKEY, C_ACCTBAL FROM CUSTOMER ORDER BY C_ACCTBAL DESC LIMIT 1",
+    "columns": ["C_CUSTKEY", "C_ACCTBAL"],
+    "rows": [[4, 950.0]],
+    "query_id": "eval-ranking-1",
+    "expected": {"outcome": "success", "row_count": 1, "answer_contains": ["C_ACCTBAL=950.0"], "sql_contains": ["ORDER BY C_ACCTBAL DESC"], "model_calls": 1, "db_calls": 1, "verification_status": "passed", "verification_checks": {"ranking_order": "skipped", "semantic_correctness": "not_run"}}
   },
   {
     "name": "invalid generated SQL",
     "question": "Show private customer addresses",
     "model_sql": "SELECT C_ADDRESS FROM CUSTOMER",
-    "expected": {"outcome": "rejected", "row_count": 0, "answer_contains": ["validation failed"], "sql_contains": ["C_ADDRESS"], "model_calls": 1, "db_calls": 0}
+    "expected": {"outcome": "rejected", "row_count": 0, "answer_contains": ["validation failed"], "sql_contains": ["C_ADDRESS"], "model_calls": 1, "db_calls": 0, "validation_status": "rejected", "execution_status": "not_run", "validation_checks": {"approved_columns": "failed"}}
+  },
+  {
+    "name": "unsupported table is rejected",
+    "question": "Show customer names from another database",
+    "model_sql": "SELECT C_NAME FROM OTHER_DB.TPCH_SF1.CUSTOMER",
+    "expected": {"outcome": "rejected", "row_count": 0, "answer_contains": ["validation failed"], "model_calls": 1, "db_calls": 0, "validation_status": "rejected", "execution_status": "not_run", "validation_checks": {"approved_table": "failed"}}
+  },
+  {
+    "name": "malformed SQL is rejected",
+    "question": "Show customer names",
+    "model_sql": "SELECT C_NAME FROM WHERE",
+    "expected": {"outcome": "rejected", "row_count": 0, "answer_contains": ["validation failed"], "model_calls": 1, "db_calls": 0, "validation_status": "rejected", "execution_status": "not_run", "validation_checks": {"sql_parse": "failed"}}
+  },
+  {
+    "name": "multiple SQL statements are rejected",
+    "question": "Show customer names",
+    "model_sql": "SELECT C_NAME FROM CUSTOMER; DROP TABLE CUSTOMER",
+    "expected": {"outcome": "rejected", "row_count": 0, "answer_contains": ["validation failed"], "model_calls": 1, "db_calls": 0, "validation_status": "rejected", "execution_status": "not_run", "validation_checks": {"single_statement": "failed"}}
+  },
+  {
+    "name": "answer consistency mismatch is reported",
+    "question": "Show one customer",
+    "model_sql": "SELECT C_CUSTKEY FROM CUSTOMER LIMIT 1",
+    "columns": ["C_CUSTKEY"],
+    "rows": [[5]],
+    "query_id": "eval-verification-fail",
+    "answer_override": "Snowflake returned 1 row: C_CUSTKEY=999.",
+    "expected": {"outcome": "success", "row_count": 1, "answer_contains": ["C_CUSTKEY=999"], "model_calls": 1, "db_calls": 1, "verification_status": "failed", "verification_checks": {"displayed_samples": "failed"}, "warnings_contain": ["consistency verification failed"]}
   },
   {
     "name": "empty result",
@@ -44,7 +91,7 @@
     "columns": ["C_CUSTKEY"],
     "rows": [],
     "query_id": "eval-empty-1",
-    "expected": {"outcome": "success", "row_count": 0, "answer_contains": ["returned no rows"], "model_calls": 1, "db_calls": 1}
+    "expected": {"outcome": "success", "row_count": 0, "answer_contains": ["returned no rows"], "model_calls": 1, "db_calls": 1, "verification_status": "passed"}
   },
   {
     "name": "LLM failure",
@@ -57,7 +104,7 @@
     "question": "Show customer keys",
     "model_sql": "SELECT C_CUSTKEY FROM CUSTOMER",
     "db_error": "mock database unavailable",
-    "expected": {"outcome": "failed", "row_count": 0, "answer_contains": ["Snowflake query failed"], "sql_contains": ["C_CUSTKEY"], "model_calls": 1, "db_calls": 1}
+    "expected": {"outcome": "failed", "row_count": 0, "answer_contains": ["Snowflake query failed"], "sql_contains": ["C_CUSTKEY"], "model_calls": 1, "db_calls": 1, "verification_status": "not_run"}
   },
   {
     "name": "greeting",
